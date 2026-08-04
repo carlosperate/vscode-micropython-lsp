@@ -1,0 +1,12 @@
+.vscode/**
+.gitignore
+test/**
+test-data/**
+client/src/**
+server/src/**
+client/package.json
+server/package.json
+esbuild.config.mjs
+tsconfig.json
+**/*.map
+**/*.ts

@@ -1,0 +1,60 @@
+{
+	"name": "python-lsp",
+	"displayName": "Python Language Server (web)",
+	"description": "Runs a Python language server in a Web Worker, for browser-hosted VS Code. Currently the unmodified microsoft/vscode-extension-samples LSP web sample (plaintext colour decorators).",
+	"publisher": "carlosperate",
+	"version": "0.1.0",
+	"license": "MIT",
+	"engines": {
+		"vscode": "^1.91.0"
+	},
+	"categories": [
+		"Programming Languages"
+	],
+	"browser": "./client/dist/browserClientMain.js",
+	"activationEvents": [
+		"onLanguage:plaintext"
+	],
+	"contributes": {
+		"configuration": [
+			{
+				"order": 22,
+				"id": "lsp-web-extension-sample",
+				"title": "lsp-web-extension-sample",
+				"properties": {
+					"lsp-web-extension-sample.trace.server": {
+						"type": "string",
+						"scope": "window",
+						"enum": [
+							"off",
+							"messages",
+							"verbose"
+						],
+						"default": "verbose",
+						"description": "Traces the communication between VS Code and the lsp-web-extension-sample language server."
+					}
+				}
+			}
+		]
+	},
+	"scripts": {
+		"build": "node esbuild.config.mjs",
+		"typecheck": "tsc --noEmit",
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"test:integration": "npm run build && npm run build:integration && vscode-test-web --headless --extensionDevelopmentPath=. --extensionTestsPath=./test/integration/dist/index.js ./test-data",
+		"build:integration": "esbuild test/integration/index.ts --bundle --outfile=test/integration/dist/index.js --format=cjs --platform=browser --external:vscode --log-level=warning",
+		"chrome": "npm run build && vscode-test-web --browser=chromium --extensionDevelopmentPath=. ./test-data"
+	},
+	"devDependencies": {
+		"@types/vscode": "^1.91.0",
+		"@vscode/test-web": "^0.0.81",
+		"esbuild": "^0.21.0",
+		"path-browserify": "^1.0.1",
+		"typescript": "^5.4.0",
+		"vitest": "^1.6.0",
+		"vscode-languageclient": "^9.0.1",
+		"vscode-languageserver": "^9.0.1",
+		"vscode-languageserver-textdocument": "^1.0.12"
+	}
+}
