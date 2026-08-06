@@ -1,62 +1,40 @@
-# Python Language Server extension for browser-hosted VS Code
+# MicroPython & CircuitPython IntelliSense LSP
 
-A VS Code extension that runs a Python language server in a **Web Worker**, so Python
-IntelliSense works in browser-hosted VS Code with no backend, e.g., `vscode.dev`-style deployments,
-static self-hosted builds, and the desktop app alike.
+Add autocomplete, type checking and inline docs for MicroPython and CircuitPython.
+Works on VSCode web, and compatible editors, in the browser.
 
-> **Status: not yet implemented.** This currently contains Microsoft's
-> [LSP web extension sample](https://github.com/microsoft/vscode-extension-samples/tree/main/lsp-web-extension-sample)
-> (MIT) unmodified — colour decorators on `#rrggbb` in plaintext files — committed as a working
-> baseline so the language server work lands as a reviewable diff.
+## Why this extension vs a generic Python LSP
 
-## Why this exists
+The goal of this extension is to provide a language server specifically configured
+for MicroPython and CircuitPython, so the autocomplete and type checking provided
+is relevant to your embedded Python project.
 
-Nothing off the shelf provides Python IntelliSense in a browser-hosted VS Code. Pylance is
-proprietary and absent from Open VSX; `ms-python.python`'s browser entry contains no analysis of
-its own; every other Python extension on Open VSX (`ms-pyright.pyright`, `detachhead.basedpyright`,
-`anysphere.pyright`, `meta.pyrefly`, `charliermarsh.ruff`) ships a `main` entry only, so it cannot
-run in the web extension host.
+Existing Python extensions expect to be running on the desktop or a server with
+filesystem access, to scan installed packages for type information.
+This extension is designed to run on both desktop and browser versions of
+VSCode web (https://vscode.dev, https://github.dev), and it ships with stubs
+for the most common MicroPython and CircuitPython boards, to provide the
+relevant autocomplete and type checking.
 
-The plan is to drive [`browser-basedpyright`](https://www.npmjs.com/package/browser-basedpyright)
-— a browser build of basedpyright, itself descended from the micro:bit Foundation's Pyright fork —
-from a `vscode-languageclient/browser` client.
+Stubs come from the [MicroPython-Stubs](https://github.com/Josverl/micropython-stubs) and
+[CircuitPython](https://github.com/adafruit/circuitpython) projects.
 
-## Layout
+## Supported boards
 
-```
-client/src/browserClientMain.ts   # runs in the extension host worker
-server/src/browserServerMain.ts   # runs in a nested Web Worker
-esbuild.config.mjs                # both bundles; also exported for host projects
-test/bundle.test.ts               # guards the module-format and path constraints
-```
+TBD.
 
-The two-bundle split and the `client/dist` + `server/dist` layout are load-bearing — see the
-comments in `esbuild.config.mjs`.
+## What gets analysed
 
-## Develop
+**Your project's `.py` files are read directly.** Your own modules, and any pure-Python files
+in the project folder, get full autocomplete and type checking with no stubs needed.
 
-```sh
-npm install
-npm run build       # bundles into client/dist and server/dist
-npm run typecheck
-npm test
-npm run chrome      # open a browser with the extension loaded
-```
-
-## Consumed from source
-
-Until this is published to Open VSX, the [`vscode-microbit`](../) project in this repository
-builds it straight from source rather than from a VSIX: `build-scripts/build-local-extensions.mjs`
-imports `getBuildTargets(outDir)` from `esbuild.config.mjs` and assembles the extension directly
-into its `dist/`. That wiring is marked temporary and is deleted once this is published — at which
-point it becomes an ordinary entry in that project's `config/extensions.config.json`.
-
-Nothing in this folder depends on that project. It is a standalone extension with its own
-manifest, dependencies, TypeScript config and tests, and is intended to be extracted to its own
-repository.
+**Stubs cover what isn't a file in your project.** The firmware's built-in modules, like `machine`,
+`board`, etc are built-in to the MicroPython or CircuitPython interpreter on the device,
+so their types come from the bundled stubs.
+Libraries present as compiled `.mpy` bytecode files cannot be read, so they would need stubs to
+be provided alongside it to get autocomplete and type checking.
 
 ## Licence
 
-MIT — see `LICENSE`. The vendored sample sources keep Microsoft's original MIT headers; bundled
-dependencies (`vscode-languageclient`, `vscode-languageserver`, `vscode-languageserver-textdocument`,
-`path-browserify`) are all MIT.
+MIT, see [LICENSE](LICENSE).
+Extension based on Microsoft's LSP web extension sample, MIT.

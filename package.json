@@ -1,7 +1,7 @@
 {
-	"name": "python-lsp",
-	"displayName": "Python Language Server (web)",
-	"description": "Runs a Python language server in a Web Worker, for browser-hosted VS Code. Currently the unmodified microsoft/vscode-extension-samples LSP web sample (plaintext colour decorators).",
+	"name": "micropython-lsp",
+	"displayName": "MicroPython & CircuitPython IntelliSense LSP",
+	"description": "Autocomplete, type checking and inline docs for MicroPython and CircuitPython. Work on VSCode web in the browser.",
 	"publisher": "carlosperate",
 	"version": "0.1.0",
 	"license": "MIT",
@@ -9,52 +9,84 @@
 		"vscode": "^1.91.0"
 	},
 	"categories": [
-		"Programming Languages"
+		"Programming Languages",
+		"Linters"
+	],
+	"keywords": [
+		"micropython",
+		"circuitpython",
+		"embedded",
+		"microbit",
+		"intellisense"
 	],
 	"browser": "./client/dist/browserClientMain.js",
 	"activationEvents": [
-		"onLanguage:plaintext"
+		"onLanguage:python"
 	],
 	"contributes": {
-		"configuration": [
-			{
-				"order": 22,
-				"id": "lsp-web-extension-sample",
-				"title": "lsp-web-extension-sample",
-				"properties": {
-					"lsp-web-extension-sample.trace.server": {
-						"type": "string",
-						"scope": "window",
-						"enum": [
-							"off",
-							"messages",
-							"verbose"
-						],
-						"default": "verbose",
-						"description": "Traces the communication between VS Code and the lsp-web-extension-sample language server."
-					}
+		"configuration": {
+			"title": "MicroPython LSP",
+			"properties": {
+				"basedpyright.analysis.typeshedPaths": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"default": [
+						"file:///typeshed"
+					],
+					"scope": "window",
+					"description": "Where the bundled pyright engine looks for typeshed stubs. Load-bearing: without it nothing resolves at all, builtins included, because the engine's own fallback looks for a 'typeshed-fallback' directory its browser bundle does not ship. Must be an absolute file:// URI — a bare path is resolved against the workspace root and never found."
+				},
+				"basedpyright.analysis.logLevel": {
+					"type": "string",
+					"enum": [
+						"error",
+						"warning",
+						"information",
+						"trace"
+					],
+					"default": "information",
+					"scope": "window",
+					"description": "How much the language server itself logs. 'trace' includes import resolution — every directory it searched for a module — which is the only practical way to debug a module that will not resolve. (This key belongs to the bundled pyright engine, not to this extension; the default matches the engine's own, so it changes nothing elsewhere.)"
+				},
+				"micropython-lsp.debug": {
+					"type": "boolean",
+					"default": false,
+					"scope": "window",
+					"description": "Mirror language server logs to the developer console, including worker boot and background-worker relay activity. The output channel always records them; this makes them visible in DevTools and in headless test runs."
+				},
+				"micropython-lsp.trace.server": {
+					"type": "string",
+					"enum": [
+						"off",
+						"messages",
+						"verbose"
+					],
+					"default": "off",
+					"scope": "window",
+					"description": "Trace LSP traffic between VS Code and the Python language server. 'verbose' includes message bodies. Combine with micropython-lsp.debug to see it in the console."
 				}
 			}
-		]
+		}
 	},
 	"scripts": {
 		"build": "node esbuild.config.mjs",
 		"typecheck": "tsc --noEmit",
 		"test": "vitest run",
 		"test:watch": "vitest",
-		"test:integration": "npm run build && npm run build:integration && vscode-test-web --headless --extensionDevelopmentPath=. --extensionTestsPath=./test/integration/dist/index.js ./test-data",
+		"test:integration": "npm run build && npm run build:integration && vscode-test-web --headless --extensionDevelopmentPath=. --extensionTestsPath=./test/integration/dist/index.js ./test/workspace",
 		"build:integration": "esbuild test/integration/index.ts --bundle --outfile=test/integration/dist/index.js --format=cjs --platform=browser --external:vscode --log-level=warning",
-		"chrome": "npm run build && vscode-test-web --browser=chromium --extensionDevelopmentPath=. ./test-data"
+		"chrome": "npm run build && vscode-test-web --browser=chromium --extensionDevelopmentPath=. ./test/workspace"
 	},
 	"devDependencies": {
 		"@types/vscode": "^1.91.0",
 		"@vscode/test-web": "^0.0.81",
+		"browser-basedpyright": "1.39.9",
 		"esbuild": "^0.21.0",
 		"path-browserify": "^1.0.1",
 		"typescript": "^5.4.0",
 		"vitest": "^1.6.0",
-		"vscode-languageclient": "^9.0.1",
-		"vscode-languageserver": "^9.0.1",
-		"vscode-languageserver-textdocument": "^1.0.12"
+		"vscode-languageclient": "^9.0.1"
 	}
 }

@@ -1,6 +1,6 @@
 node_modules/
+assets/
 client/dist/
-server/dist/
 test/integration/dist/
 .vscode-test-web/
 *.vsix

@@ -12,8 +12,7 @@
 				"--extensionDevelopmentKind=web"
 			],
 			"outFiles": [
-				"${workspaceFolder}/client/dist/**/*.js",
-				"${workspaceFolder}/server/dist/**/*.js"
+				"${workspaceFolder}/client/dist/**/*.js"
 			],
 			"preLaunchTask": "npm: build"
 		}

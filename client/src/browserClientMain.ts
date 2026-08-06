@@ -1,49 +1,74 @@
-/*---------------------------------------------------------------------------------------------
- *  Copyright (c) Microsoft Corporation. All rights reserved.
- *  Licensed under the MIT License. See License.txt in the project root for license information.
- *--------------------------------------------------------------------------------------------*/
-
-import { ExtensionContext, Uri } from 'vscode';
+import { ExtensionContext, Uri, WorkspaceFolder, workspace } from 'vscode';
 import { LanguageClientOptions } from 'vscode-languageclient';
-
 import { LanguageClient } from 'vscode-languageclient/browser';
 
+import { debug, initLogging, log, traceChannel } from './log';
+import { PyrightWorker, startPyrightWorker } from './worker';
+
 let client: LanguageClient | undefined;
-// this method is called when vs code is activated
+let pyright: PyrightWorker | undefined;
+
 export async function activate(context: ExtensionContext) {
+	const outputChannel = initLogging();
+	const workerUrl = Uri.joinPath(context.extensionUri, 'assets/pyright.worker.js').toString(true);
+	log(`starting pyright worker from ${workerUrl}`);
+	pyright = startPyrightWorker(workerUrl, debug);
 
-	console.log('lsp-web-extension-sample activated!');
-
-	/*
-	 * all except the code to create the language client in not browser specific
-	 * and could be shared with a regular (Node) extension
-	 */
-	const documentSelector = [{ language: 'plaintext' }];
-
-	// Options to control the language client
 	const clientOptions: LanguageClientOptions = {
-		documentSelector,
-		synchronize: {},
-		initializationOptions: {}
+		documentSelector: [{ language: 'python' }],
+		outputChannel,
+		traceOutputChannel: traceChannel(),
+		workspaceFolder: serverWorkspaceFolder(),
+		// Sent even when empty: the server destructures `files` unguarded, and
+		// only applies its embedded typeshed when it is an object. Device stubs
+		// go here once they are bundled.
+		initializationOptions: { files: {} },
 	};
 
-	client = createWorkerLanguageClient(context, clientOptions);
+	client = new LanguageClient('micropython-lsp', 'MicroPython LSP', clientOptions, pyright.worker);
+	try {
+		await client.start();
+	} catch (error) {
+		await stopEverything(); // or the workers outlive the failed activation
+		throw error;
+	}
+	log('language client started');
 
-	await client.start();
-	console.log('lsp-web-extension-sample server is ready');
+	// Test seam, not a public API.
+	return { client, pyright };
 }
 
 export async function deactivate(): Promise<void> {
-	if (client !== undefined) {
-		await client.stop();
+	await stopEverything();
+}
+
+/** Never throws, so a client that fails to stop cannot strand its workers. */
+async function stopEverything(): Promise<void> {
+	try {
+		await client?.stop();
+	} catch (error) {
+		log(`stopping the language client failed: ${String(error)}`);
+	} finally {
+		client = undefined;
+		pyright?.dispose();
+		pyright = undefined;
 	}
 }
 
-function createWorkerLanguageClient(context: ExtensionContext, clientOptions: LanguageClientOptions) {
-	// Create a worker. The worker main file implements the language server.
-	const serverMain = Uri.joinPath(context.extensionUri, 'server/dist/browserServerMain.js');
-	const worker = new Worker(serverMain.toString(true));
-
-	// create the language server client to communicate with the server running in the worker
-	return new LanguageClient('lsp-web-extension-sample', 'LSP Web Extension Sample', clientOptions, worker);
+/**
+ * The root reported to the server, which must be a `file:` URI.
+ *
+ * Pyright's browser build is backed by an in-memory filesystem keyed on plain
+ * POSIX paths. Under any other scheme it reports non-existent files as existing
+ * and nothing resolves, `builtins` included.
+ *
+ * So the rule is by scheme, not by host application: `file:` passes straight
+ * through, and anything else (`vscode-vfs:` on vscode.dev, a virtual provider
+ * registered by an embedding app) gets a synthetic root for the mirror to
+ * translate onto.
+ */
+function serverWorkspaceFolder(): WorkspaceFolder {
+	const folder = workspace.workspaceFolders?.[0];
+	if (folder?.uri.scheme === 'file') return folder;
+	return { uri: Uri.parse('file:///'), name: 'micropython-lsp', index: 0 };
 }

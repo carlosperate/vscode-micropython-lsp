@@ -4,8 +4,15 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
-// Two bundles with different module formats, so two esbuild invocations.
-// Settings mirror the upstream sample's webpack config.
+/** Prebuilt pyright worker, vendored from the pinned `browser-basedpyright`. */
+export const PYRIGHT_WORKER = path.join(
+	here,
+	'node_modules',
+	'browser-basedpyright',
+	'dist',
+	'pyright.worker.js'
+);
+
 const SHARED = {
 	bundle: true,
 	platform: 'browser',
@@ -19,9 +26,10 @@ const SHARED = {
 };
 
 /**
- * Bundles this extension produces, rooted at `outDir`. Exported so a host
- * project can build it from source without a VSIX. Layout is load-bearing:
- * the client hardcodes the server's path.
+ * Build targets this extension produces, rooted at `outDir`: one bundle and
+ * one verbatim copy. Exported so a host project can build it from source
+ * without a VSIX. The layout is load-bearing: the client builds the worker URL
+ * from `context.extensionUri`, so `assets/` must land where it expects.
  *
  * @param {string} outDir directory to assemble into
  * @returns {import('esbuild').BuildOptions[]}
@@ -37,13 +45,14 @@ export function getBuildTargets(outDir = here) {
 			outfile: path.join(outDir, 'client', 'dist', 'browserClientMain.js'),
 		},
 		{
-			...SHARED,
-			// IIFE, never ESM: VS Code's nested-worker polyfill loads this with
-			// `importScripts`, which needs a classic script. See test/bundle.test.ts.
-			entryPoints: [path.join(here, 'server', 'src', 'browserServerMain.ts')],
-			format: 'iife',
-			globalName: 'serverExportVar',
-			outfile: path.join(outDir, 'server', 'dist', 'browserServerMain.js'),
+			// Copied verbatim, never bundled: the polyfill loads it with
+			// `importScripts`, and byte-identity with the pinned package is what
+			// makes the undocumented worker protocol auditable across bumps.
+			absWorkingDir: here,
+			entryPoints: [PYRIGHT_WORKER],
+			loader: { '.js': 'copy' },
+			outfile: path.join(outDir, 'assets', 'pyright.worker.js'),
+			logLevel: 'warning',
 		},
 	];
 }

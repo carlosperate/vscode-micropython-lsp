@@ -16,6 +16,6 @@
     "lib": ["ES2020", "WebWorker"],
     "types": ["vscode"]
   },
-  "include": ["client/src/**/*.ts", "server/src/**/*.ts", "test/**/*.ts"],
-  "exclude": ["node_modules", "client/dist", "server/dist"]
+  "include": ["client/src/**/*.ts", "test/**/*.ts"],
+  "exclude": ["node_modules", "client/dist"]
 }
