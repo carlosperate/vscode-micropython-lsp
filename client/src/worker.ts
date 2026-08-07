@@ -33,6 +33,7 @@ export interface PyrightWorker {
 /** Takes its logger rather than importing one, so it stays free of `vscode`. */
 export function startPyrightWorker(workerUrl: string, log: (message: string) => void = () => {}): PyrightWorker {
 	const created: Worker[] = [];
+	let disposed = false;
 
 	const spawn = (name: string): Worker => {
 		const worker = new Worker(workerUrl, { name });
@@ -50,6 +51,8 @@ export function startPyrightWorker(workerUrl: string, log: (message: string) => 
 	foreground.addEventListener('message', (event: MessageEvent) => {
 		const message = event.data as NewWorkerMessage | undefined;
 		if (message?.type !== 'browser/newWorker') return;
+		// A relay after disposal would strand a worker nothing owns.
+		if (disposed) return;
 
 		log(`relaying browser/newWorker (port is MessagePort: ${message.port instanceof MessagePort})`);
 		spawn('pyright-background').postMessage(
@@ -66,6 +69,8 @@ export function startPyrightWorker(workerUrl: string, log: (message: string) => 
 			return created.filter((worker) => worker !== foreground).length;
 		},
 		dispose: () => {
+			if (disposed) return;
+			disposed = true;
 			log(`terminating ${created.length} worker(s)`);
 			for (const worker of created) worker.terminate();
 			created.length = 0;

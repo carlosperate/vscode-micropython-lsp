@@ -38,18 +38,32 @@ export function debug(message: string): void {
 	console.log(`[micropython-lsp] ${message}`);
 }
 
-/** Trace sink for the language client, sharing the same channel. */
+/**
+ * Trace sink for the language client, sharing the same channel.
+ *
+ * Each method must delegate to its namesake. `logTrace` writes whole records
+ * with `appendLine` and no trailing newline of its own, so routing that to
+ * `append` runs the entire trace together into one unreadable line.
+ */
 export function traceChannel(): OutputChannel {
 	const target = initLogging();
-	const write = (value: string) => {
-		target.append(value);
+	const mirror = (value: string) => {
 		if (debugEnabled) console.log(`[lsp] ${value}`);
 	};
 	return {
 		name: 'MicroPython LSP Trace',
-		append: write,
-		appendLine: write,
-		replace: write,
+		append: (value: string) => {
+			target.append(value);
+			mirror(value);
+		},
+		appendLine: (value: string) => {
+			target.appendLine(value);
+			mirror(value);
+		},
+		replace: (value: string) => {
+			target.replace(value);
+			mirror(value);
+		},
 		clear: () => target.clear(),
 		show: () => target.show(),
 		hide: () => target.hide(),

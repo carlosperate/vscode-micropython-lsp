@@ -18,7 +18,7 @@ describe('extension bundles', () => {
 	let client: string;
 
 	beforeAll(async () => {
-		outDir = await mkdtemp(path.join(tmpdir(), 'python-lsp-build-'));
+		outDir = await mkdtemp(path.join(tmpdir(), 'micropython-lsp-build-'));
 		await build(outDir);
 		client = await readFile(path.join(outDir, 'client', 'dist', 'browserClientMain.js'), 'utf8');
 	}, 60_000);
@@ -59,7 +59,7 @@ describe('vendored pyright worker', () => {
 	let worker: Buffer;
 
 	beforeAll(async () => {
-		outDir = await mkdtemp(path.join(tmpdir(), 'python-lsp-asset-'));
+		outDir = await mkdtemp(path.join(tmpdir(), 'micropython-lsp-asset-'));
 		await build(outDir);
 		worker = await readFile(path.join(outDir, 'assets', 'pyright.worker.js'));
 	}, 60_000);

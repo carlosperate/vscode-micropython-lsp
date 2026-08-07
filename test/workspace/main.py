@@ -40,9 +40,13 @@ display.scroll("hi")
 button_a.is_pressed()
 
 # 5. THE BYPASS: this one is backwards on purpose.
-#    Right now `asyncio` RESOLVES, and that is the bug: the engine's bundled
+#    Right now `subprocess` RESOLVES, and that is the bug: the engine's bundled
 #    CPython typeshed is live, so a MicroPython learner can autocomplete modules
 #    their board does not have. Once the typeshed is replaced with the board's
 #    own, this must fail to resolve. A green line here afterwards means the
 #    wrong typeshed won.
-import asyncio
+#
+#    Not `asyncio`: MicroPython 1.21+ really does ship it, and the replacement
+#    stdlib stubs include it, so it is supposed to resolve. `subprocess` is
+#    absent from MicroPython, CircuitPython and micro:bit alike.
+import subprocess

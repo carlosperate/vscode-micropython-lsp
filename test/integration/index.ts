@@ -1,4 +1,11 @@
 import * as vscode from 'vscode';
+// Via the language client, not `vscode-jsonrpc` directly: it re-exports the same
+// module, so the probe cannot drift onto a different protocol version than the
+// client stack, and nothing new has to be declared to import it.
+import { BrowserMessageReader, BrowserMessageWriter, createMessageConnection } from 'vscode-languageclient/browser';
+
+import { startPyrightWorker } from '../../client/src/worker';
+import { BYPASS_PROBE, replacementTypeshed } from './typeshed-fixture';
 
 const EXTENSION_ID = 'carlosperate.micropython-lsp';
 
@@ -62,12 +69,14 @@ export async function run(): Promise<void> {
 		.getConfiguration('basedpyright.analysis')
 		.update('logLevel', 'trace', vscode.ConfigurationTarget.Global);
 
+	const activateStarted = Date.now();
 	const api = await ext.activate();
+	const activateMs = Date.now() - activateStarted;
 	assert(ext.isActive, `${EXTENSION_ID} failed to activate`);
 	const client = api?.client;
 	assert(client, 'activate() did not return the language client');
 	record('extension activates and the language client starts', true,
-		'foreground worker booted and the LSP handshake completed');
+		`foreground worker booted and the LSP handshake completed in ${activateMs} ms`);
 
 	// Asserted, not assumed. If the relay breaks, the foreground worker keeps
 	// answering hover and completion and everything below still passes, while
@@ -85,7 +94,7 @@ export async function run(): Promise<void> {
 
 	// First, before anything is seeded: this is the state a user is actually in
 	// when they open a file in a fresh session.
-	await checkEditorExperience(root);
+	await checkEditorExperience(root, activateStarted);
 
 	// Everything is mirrored onto `file:///`, which is what the extension reports
 	// as the server's root, and therefore what the workspace mirror will use.
@@ -115,7 +124,253 @@ export async function run(): Promise<void> {
 		`stubs cannot be added after initialize. hover: ${oneLine(late)}`);
 
 	await checkWorkspaceFile(client, root);
+	await checkTypingKeepsUp(client);
+
+	// The ping is answered with `MethodNotFound`, and only `ping()` knows that
+	// counts as alive. Get it wrong and a healthy server restarts every few
+	// seconds, which no unit test can see: it depends on what the engine replies.
+	record('the liveness probe reports a healthy server as alive', await api.checkHealth(),
+		'an unimplemented ping must come back as MethodNotFound, not as silence');
+
+	// Before crash recovery, which leaves a different client behind. Uses its own
+	// throwaway workers, so it does not disturb the session above.
+	await checkTypeshedBypass(ext);
+
+	// Last: it replaces the client and worker that everything above holds.
+	await checkCrashRecovery(api, root);
 	summarise();
+}
+
+/**
+ * Does the server keep up while the document keeps changing? The engine cannot
+ * cancel an in-flight analysis, so this is the one measurement that could have
+ * invalidated the engine choice.
+ *
+ * **Each edit renames the alias being completed**, so a non-empty result proves
+ * the edit landed. Completing on something the edit does not touch measures a
+ * possibly-stale document and reports a flatteringly small number.
+ *
+ * The latencies are logged, never asserted: a threshold here is a flaky CI
+ * failure, and the number is only useful against itself over time.
+ */
+async function checkTypingKeepsUp(client: any): Promise<void> {
+	const uri = 'file:///gate/perf.py';
+	await seed(client, uri, 'import sys\n');
+
+	const latencies: number[] = [];
+	let items = 0;
+	for (let edit = 1; edit <= 20; edit++) {
+		const alias = `sys_${edit}`;
+		await client.sendNotification('textDocument/didChange', {
+			textDocument: { uri, version: edit + 1 },
+			contentChanges: [{ text: `import sys as ${alias}\n\n${alias}.\n` }],
+		});
+		const started = Date.now();
+		const result = await client.sendRequest('textDocument/completion', {
+			textDocument: { uri },
+			position: { line: 2, character: alias.length + 1 },
+		});
+		latencies.push(Date.now() - started);
+		items = result?.items?.length ?? result?.length ?? 0;
+	}
+
+	const sorted = [...latencies].sort((a, b) => a - b);
+	record('completion keeps up while the document changes', items > 0,
+		`20 edits, ${items} items on the newest alias: first ${latencies[0]} ms, ` +
+		`median ${sorted[Math.floor(sorted.length / 2)]} ms, max ${sorted[sorted.length - 1]} ms, ` +
+		`last ${latencies[latencies.length - 1]} ms`);
+}
+
+/**
+ * The typeshed bypass gate: does a replacement typeshed root displace the embedded one?
+ *
+ * Both delivery mechanisms are read at `initialize`, so neither can be tested by
+ * reconfiguring a running server. Each gets its own throwaway worker and client,
+ * which also keeps the extension's own session out of it.
+ *
+ * `sys.platform` is the instrument. The embedded CPython typeshed types it as
+ * `LiteralString`; the replacement root declares a plain `str`. So the hover text
+ * says which root actually answered, and "no hover at all" stays distinguishable
+ * from either, which matters because a root the engine cannot read looks exactly
+ * like a successful bypass if you only assert that `subprocess` is gone.
+ */
+async function checkTypeshedBypass(ext: vscode.Extension<any>): Promise<void> {
+	const workerUrl = vscode.Uri.joinPath(ext.extensionUri, 'assets/pyright.worker.js').toString(true);
+	const root = '/mp-typeshed';
+	const files = replacementTypeshed(root);
+
+	// A: typeshedPaths, the channel the contributed setting feeds.
+	await recordBypassCase('A: typeshedPaths configuration', workerUrl, files, {
+		typeshedPaths: [`file://${root}`],
+		logLevel: 'trace',
+	});
+
+	// B: a seeded pyrightconfig.json, with the configuration pointing back at the
+	// embedded root so anything that works is the config file's doing.
+	await recordBypassCase(
+		'B: seeded pyrightconfig.json',
+		workerUrl,
+		{ ...files, '/pyrightconfig.json': JSON.stringify({ typeshedPath: root, stubPath: `${root}/stubs` }, null, 2) },
+		{ typeshedPaths: ['file:///typeshed'], logLevel: 'trace' }
+	);
+}
+
+/**
+ * One mechanism, reported either way.
+ *
+ * A throw here would skip crash recovery and `summarise()` with it, losing every
+ * result the run had already accumulated. The suite reports before it asserts.
+ */
+async function recordBypassCase(
+	mechanism: string,
+	workerUrl: string,
+	files: Record<string, string>,
+	analysisConfig: Record<string, unknown>
+): Promise<void> {
+	try {
+		recordBypass(mechanism, await probeBypass(workerUrl, files, analysisConfig));
+	} catch (error) {
+		record(`typeshed bypass, ${mechanism}`, false, `the probe threw: ${String(error)}`);
+	}
+}
+
+interface BypassResult {
+	stdlib: string | undefined;
+	own: string | undefined;
+	missing: string | undefined;
+}
+
+/**
+ * The two hovers that decide it, over a raw JSON-RPC connection.
+ *
+ * Deliberately not a second `LanguageClient`: that one registers the server's
+ * commands with VS Code, and a second registration of `basedpyright.createtypestub`
+ * throws `command already exists`, failing the probe's `start()` before it asks
+ * anything. A bare connection also means the gate answers `workspace/configuration`
+ * itself, so mechanism A is tested against a known reply rather than through the
+ * settings plumbing that the rest of the suite already exercises.
+ */
+async function probeBypass(
+	workerUrl: string,
+	files: Record<string, string>,
+	analysisConfig: Record<string, unknown>
+): Promise<BypassResult> {
+	const workers = startPyrightWorker(workerUrl, (m) => console.log(`[gate:bypass] ${m}`));
+	const connection = createMessageConnection(
+		new BrowserMessageReader(workers.worker),
+		new BrowserMessageWriter(workers.worker)
+	);
+
+	// The server asks for `python` and `basedpyright.analysis`, one entry per
+	// requested section. Anything unasked-for gets an empty object, never null:
+	// pyright reads properties off the reply without guarding.
+	connection.onRequest('workspace/configuration', (params: any) =>
+		(params.items ?? []).map((item: any) =>
+			item.section === 'basedpyright.analysis' ? analysisConfig : {}
+		)
+	);
+	connection.onRequest('client/registerCapability', () => null);
+	connection.onRequest('window/workDoneProgress/create', () => null);
+
+	// `logLevel: 'trace'` makes the resolver name every directory it searched, the
+	// only way to see which root actually answered for a module.
+	connection.onNotification('window/logMessage', ({ message }: any) => {
+		if (/subprocess|microbit|typeshed/i.test(message)) console.log(`[gate:resolve] ${message}`);
+	});
+
+	connection.listen();
+
+	try {
+		// Bounded: a worker that boots but never answers `initialize` would
+		// otherwise hang the whole gate with no FAIL line and no summary.
+		await withTimeout(connection.sendRequest('initialize', {
+			processId: null,
+			rootUri: 'file:///',
+			workspaceFolders: [{ uri: 'file:///', name: 'bypass' }],
+			initializationOptions: { files },
+			capabilities: {
+				workspace: { configuration: true, workspaceFolders: true },
+				textDocument: {
+					synchronization: {},
+					hover: { contentFormat: ['markdown', 'plaintext'] },
+				},
+			},
+		}), 30_000, 'initialize');
+		await connection.sendNotification('initialized', {});
+
+		const uri = 'file:///bypass/probe.py';
+		await seed(connection, uri, BYPASS_PROBE);
+		return {
+			// Order is load-bearing. These two wait on a predicate, which drains the
+			// analysis pass, so the absence probe below reads a settled file. Hover
+			// it first instead and a mid-analysis `Unknown` reports a bypass that
+			// never happened.
+			stdlib: await hover(connection, uri, BYPASS_PROBE, 'platform', (t) => /str|LiteralString/.test(t)),
+			own: await hover(connection, uri, BYPASS_PROBE, 'panic', (t) => /panic/.test(t)),
+			missing: await hover(connection, uri, BYPASS_PROBE, 'Popen'),
+		};
+	} finally {
+		// Never let a probe's workers outlive it: the next probe boots its own.
+		connection.dispose();
+		workers.dispose();
+	}
+}
+
+/**
+ * Both halves must hold. A root the engine never loaded also has no `subprocess`,
+ * so "it is gone" alone is not evidence: `microbit` and `sys.platform` are what
+ * separate a real bypass from a typeshed that simply failed to resolve.
+ */
+function recordBypass(mechanism: string, { stdlib, own, missing }: BypassResult): void {
+	const replacementLive = Boolean(stdlib && !/LiteralString/.test(stdlib) && /\bstr\b/.test(stdlib));
+	const ownResolves = Boolean(own && /def panic/.test(own));
+	// Requires a hover that says `Unknown`, rather than accepting silence. No
+	// answer at all is not evidence of absence, and treating it as a pass is how a
+	// gate goes green on an engine that stopped answering.
+	const subprocessGone = Boolean(missing && /Unknown/.test(missing) && !/\(class\)|__init__/.test(missing));
+
+	record(`typeshed bypass, ${mechanism}`, replacementLive && ownResolves && subprocessGone,
+		`sys.platform: ${oneLine(stdlib)} (want str, not LiteralString); ` +
+		`microbit.panic: ${oneLine(own)} (want a def); ` +
+		`subprocess.Popen: ${oneLine(missing)} (want Unknown, not a class)`);
+}
+
+/**
+ * Crash recovery, which never runs in normal use and so is the thing that will
+ * silently regress.
+ *
+ * `terminate()` is the honest simulation: it is exactly as silent as a real
+ * crash. Nothing fires, `postMessage` keeps succeeding into the void, and the
+ * LSP connection never closes, so the liveness probe is the only detector, and
+ * driving it by hand is what keeps this test from waiting out a 30s interval.
+ */
+async function checkCrashRecovery(api: any, root: vscode.Uri): Promise<void> {
+	const before = api.pyright;
+	assert(before, 'activate() did not return the worker handle');
+
+	const { uri, platform } = await openBench(root);
+
+	before.worker.terminate();
+	console.log('[gate] terminated the foreground worker');
+
+	const answers: boolean[] = [];
+	for (let probe = 0; probe < 2; probe++) answers.push(await api.checkHealth());
+	record('a silently terminated worker is detected', answers.every((alive) => !alive),
+		`probes answered alive: ${answers.join(', ')} (both must be false)`);
+
+	// Hover, not completion: with the server dead VS Code still answers `sys.`
+	// with ~200 word-based suggestions, so a completion list proves nothing here.
+	// Only the language server can type `platform` as `LiteralString`.
+	const recovered = await waitFor(
+		() => editorHover(uri, platform),
+		(text) => /LiteralString/.test(text ?? ''),
+		60_000
+	);
+	record('the server recovers without a window reload', /LiteralString/.test(recovered ?? ''),
+		`hover on sys.platform after the crash: ${oneLine(recovered)}`);
+	const after = api.pyright;
+	record('the replacement is a new worker', after !== undefined && after !== before,
+		`before=${describeWorker(before)} after=${describeWorker(after)}`);
 }
 
 /**
@@ -157,44 +412,38 @@ async function checkWorkspaceFile(client: any, root: vscode.Uri): Promise<void> 
  * What a user gets from opening a file, via VS Code's own providers. Everything
  * else drives LSP directly, which can pass while the editor experience is broken.
  */
-async function checkEditorExperience(root: vscode.Uri): Promise<void> {
-	const uri = vscode.Uri.joinPath(root, 'main.py');
-	const doc = await vscode.workspace.openTextDocument(uri);
-	await vscode.window.showTextDocument(doc);
+async function checkEditorExperience(root: vscode.Uri, activateStarted: number): Promise<void> {
+	const { uri, platform, dot } = await openBench(root);
 
-	const line = doc.getText().split('\n').findIndex((l) => l.includes('print(sys.platform)'));
-	assert(line >= 0, 'test/workspace/main.py no longer contains print(sys.platform)');
-	const text = doc.lineAt(line).text;
-
-	const hovers = await waitFor(
-		() => vscode.commands.executeCommand<vscode.Hover[]>(
-			'vscode.executeHoverProvider', uri, new vscode.Position(line, text.indexOf('platform'))
-		),
-		(result) => Boolean(result?.length)
-	);
-	const hoverText = hovers
-		?.flatMap((h) => h.contents.map((c) => (typeof c === 'string' ? c : (c as vscode.MarkdownString).value)))
-		.join(' ')
-		.trim();
+	const hoverText = await waitFor(() => editorHover(uri, platform), (result) => Boolean(result));
 	record('editor: hover works on an opened file', Boolean(hoverText),
 		`vscode.executeHoverProvider on sys.platform: ${oneLine(hoverText)}`);
 
 	const completions = await waitFor(
 		() => vscode.commands.executeCommand<vscode.CompletionList>(
-			'vscode.executeCompletionItemProvider', uri, new vscode.Position(line, text.indexOf('.') + 1)
+			'vscode.executeCompletionItemProvider', uri, dot
 		),
 		(result) => Boolean(result?.items?.length)
 	);
 	record('editor: completion works on an opened file', Boolean(completions?.items?.length),
 		`${completions?.items?.length ?? 0} items after "sys."`);
+
+	// Cold start as a user experiences it: activation through to the first
+	// completion an editor actually shows.
+	record('NOTE: cold start', true,
+		`${Date.now() - activateStarted} ms from activate() to the first editor completion`);
 }
 
 /**
  * Poll until `accept` is satisfied, since analysis starts asynchronously.
  * Callers pass a predicate because providers answer early with empty results.
  */
-async function waitFor<T>(fn: () => Thenable<T>, accept: (value: T) => boolean): Promise<T | undefined> {
-	const deadline = Date.now() + 20_000;
+async function waitFor<T>(
+	fn: () => Thenable<T>,
+	accept: (value: T) => boolean,
+	timeoutMs = 20_000
+): Promise<T | undefined> {
+	const deadline = Date.now() + timeoutMs;
 	let last: T | undefined;
 	while (Date.now() < deadline) {
 		last = await fn();
@@ -260,10 +509,49 @@ function lastOccurrence(source: string, symbol: string): { line: number; charact
 	return undefined;
 }
 
+/** Open the bench in an editor and locate block 1, which two checks both probe. */
+async function openBench(root: vscode.Uri) {
+	const uri = vscode.Uri.joinPath(root, 'main.py');
+	const doc = await vscode.workspace.openTextDocument(uri);
+	await vscode.window.showTextDocument(doc);
+
+	const line = doc.getText().split('\n').findIndex((l) => l.includes('print(sys.platform)'));
+	assert(line >= 0, 'test/workspace/main.py no longer contains print(sys.platform)');
+	const text = doc.lineAt(line).text;
+
+	return {
+		uri,
+		platform: new vscode.Position(line, text.indexOf('platform')),
+		dot: new vscode.Position(line, text.indexOf('.') + 1),
+	};
+}
+
+/** Hover through VS Code's own provider stack, flattened to text. */
+async function editorHover(uri: vscode.Uri, position: vscode.Position): Promise<string | undefined> {
+	const hovers = await vscode.commands.executeCommand<vscode.Hover[]>(
+		'vscode.executeHoverProvider', uri, position
+	);
+	return hovers
+		?.flatMap((h) => h.contents.map((c) => (typeof c === 'string' ? c : (c as vscode.MarkdownString).value)))
+		.join(' ')
+		.trim();
+}
+
+const describeWorker = (handle: any) =>
+	handle ? `<worker backgroundCount=${handle.backgroundCount}>` : '<none>';
+
 const oneLine = (text: string | undefined) =>
 	text ? text.replace(/\s+/g, ' ').replace(/```python|```/g, '').trim().slice(0, 100) : '<no hover>';
 
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Fail loudly instead of hanging when the server never answers. */
+function withTimeout<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+	return Promise.race([
+		work,
+		new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`${what} timed out after ${ms}ms`)), ms)),
+	]);
+}
 
 function summarise(): void {
 	console.log('\n[gate] ==== summary ====');
