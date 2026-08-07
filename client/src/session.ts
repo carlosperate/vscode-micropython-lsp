@@ -2,10 +2,12 @@ import { commands, OutputChannel, Uri, window, workspace, WorkspaceFolder } from
 import { CloseAction, ErrorAction, ErrorHandler, LanguageClientOptions } from 'vscode-languageclient';
 import { LanguageClient } from 'vscode-languageclient/browser';
 
+import { createClientSink, createMirror, type Mirror } from './fs-bridge';
 import { Heartbeat, startHeartbeat } from './heartbeat';
 import { debug, log, traceChannel } from './log';
 import { ping } from './ping';
 import { DEFAULT_RESTART_POLICY, decideRestart, RestartPolicy } from './restart-policy';
+import { createUriMap, SERVER_ROOT, type UriMap } from './uri-map';
 import { PyrightWorker, startPyrightWorker } from './worker';
 
 /**
@@ -29,9 +31,11 @@ export class AnalysisSession {
 	private client: LanguageClient | undefined;
 	private workers: PyrightWorker | undefined;
 	private heartbeat: Heartbeat | undefined;
+	private mirror: Mirror | undefined;
 	private restarts: number[] = [];
 	private gaveUp = false;
 	private disposed = false;
+	private warnedMultiRoot = false;
 	/** Serialises start, stop and restart, which can otherwise interleave. */
 	private queue: Promise<unknown> = Promise.resolve();
 
@@ -71,7 +75,9 @@ export class AnalysisSession {
 		log(`starting pyright worker from ${this.workerUrl}`);
 		this.workers = startPyrightWorker(this.workerUrl, debug);
 
-		const client = new LanguageClient('micropython-lsp', 'MicroPython LSP', this.clientOptions(), this.workers.worker);
+		// Rebuilt per start, so a restart picks up a workspace root that moved.
+		const uris = createUriMap(this.workspaceRoot());
+		const client = new LanguageClient('micropython-lsp', 'MicroPython LSP', this.clientOptions(uris), this.workers.worker);
 		this.client = client;
 		try {
 			await client.start();
@@ -79,6 +85,12 @@ export class AnalysisSession {
 			await this.stopNow(); // or the workers outlive the failed start
 			throw error;
 		}
+
+		// A fresh worker starts with an empty filesystem, so every start re-seeds.
+		// Not awaited: a large workspace must not hold up activation, and open
+		// files already work through the client's own document sync.
+		this.mirror = createMirror({ sink: createClientSink(client), uris, folder: workspace.workspaceFolders?.[0], log });
+		void this.mirror.seed().catch((error) => log(`mirror: seeding failed: ${String(error)}`));
 
 		// A heartbeat never reports a death after it has been disposed, so a probe
 		// left in flight by a restart cannot kill the server that replaced it.
@@ -93,6 +105,10 @@ export class AnalysisSession {
 	private async stopNow(): Promise<void> {
 		this.heartbeat?.dispose();
 		this.heartbeat = undefined;
+		// Before the client goes: a push landing on a stopped client throws, and a
+		// seed still walking would otherwise write into the worker that replaced it.
+		this.mirror?.dispose();
+		this.mirror = undefined;
 		try {
 			await this.client?.stop(STOP_TIMEOUT_MS);
 		} catch (error) {
@@ -134,12 +150,37 @@ export class AnalysisSession {
 		}
 	}
 
-	private clientOptions(): LanguageClientOptions {
+	/**
+	 * The root the URI map translates from.
+	 *
+	 * One folder, deliberately. Several would need collision-free synthetic
+	 * roots and per-folder mapping, and a device project is one folder. With no
+	 * folder open there is nothing to translate, so the map is rooted at the
+	 * server root and passes everything through unchanged.
+	 */
+	private workspaceRoot(): string {
+		const folders = workspace.workspaceFolders ?? [];
+		if (folders.length > 1 && !this.warnedMultiRoot) {
+			this.warnedMultiRoot = true;
+			log(`${folders.length} workspace folders open; analysing only "${folders[0].name}"`);
+		}
+		return folders[0]?.uri.toString() ?? SERVER_ROOT;
+	}
+
+	private clientOptions(uris: UriMap): LanguageClientOptions {
 		return {
 			documentSelector: [{ language: 'python' }],
 			outputChannel: this.outputChannel,
 			traceOutputChannel: traceChannel(),
-			workspaceFolder: serverWorkspaceFolder(),
+			workspaceFolder: serverWorkspaceFolder(uris),
+			// Every URI the client sends or receives passes through here, so an
+			// editor document and its mirrored copy are one file to the server
+			// rather than two. Falling back to the original leaves URIs the
+			// server owns, typeshed above all, untouched in both directions.
+			uriConverters: {
+				code2Protocol: (uri) => uris.toServerUri(uri.toString()) ?? uri.toString(),
+				protocol2Code: (value) => Uri.parse(uris.toWorkspaceUri(value) ?? value),
+			},
 			errorHandler: this.errorHandler(),
 			// Sent even when empty: the server destructures `files` unguarded, and
 			// only applies its embedded typeshed when it is an object. Device stubs
@@ -193,15 +234,17 @@ async function reportGiveUp(): Promise<void> {
  * POSIX paths. Under any other scheme it reports non-existent files as existing
  * and nothing resolves, `builtins` included.
  *
- * So the rule is by scheme, not by host application: `file:` passes straight
- * through, and anything else (`vscode-vfs:` on vscode.dev, a virtual provider
- * registered by an embedding app) gets a synthetic root for the mirror to
- * translate onto.
+ * The map already decides this by scheme, so read it from there rather than
+ * repeating the rule: `file:` is its own root, anything else (`vscode-vfs:` on
+ * vscode.dev, a virtual provider registered by an embedding app) gets the
+ * synthetic root that open documents and the mirror both translate onto.
+ *
+ * Setting this also keeps `WorkspaceFoldersFeature` unregistered, so VS Code's
+ * real folders never reach `initialize` behind the map's back.
  */
-function serverWorkspaceFolder(): WorkspaceFolder {
-	const folder = workspace.workspaceFolders?.[0];
-	if (folder?.uri.scheme === 'file') return folder;
-	return { uri: Uri.parse('file:///'), name: 'micropython-lsp', index: 0 };
+function serverWorkspaceFolder(uris: UriMap): WorkspaceFolder {
+	const name = workspace.workspaceFolders?.[0]?.name ?? 'micropython-lsp';
+	return { uri: Uri.parse(uris.serverRoot), name, index: 0 };
 }
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));

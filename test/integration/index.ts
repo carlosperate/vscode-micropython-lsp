@@ -4,6 +4,7 @@ import * as vscode from 'vscode';
 // client stack, and nothing new has to be declared to import it.
 import { BrowserMessageReader, BrowserMessageWriter, createMessageConnection } from 'vscode-languageclient/browser';
 
+import { SERVER_ROOT } from '../../client/src/uri-map';
 import { startPyrightWorker } from '../../client/src/worker';
 import { BYPASS_PROBE, replacementTypeshed } from './typeshed-fixture';
 
@@ -95,12 +96,13 @@ export async function run(): Promise<void> {
 	// First, before anything is seeded: this is the state a user is actually in
 	// when they open a file in a fresh session.
 	await checkEditorExperience(root, activateStarted);
+	await checkMirror(root);
 
-	// Everything is mirrored onto `file:///`, which is what the extension reports
-	// as the server's root, and therefore what the workspace mirror will use.
+	// Everything is mirrored under the server root, which is what the extension
+	// reports as its workspace folder and therefore what the mirror will use.
 	// Other schemes may also happen to work, but asserting on that mostly measures
 	// pyright's import caching rather than anything we control.
-	const base = 'file:///gate';
+	const base = `${SERVER_ROOT}/gate`;
 
 	// Created but never given content. Stub delivery depends on this staying
 	// empty: there is no content channel after initialize.
@@ -154,7 +156,7 @@ export async function run(): Promise<void> {
  * failure, and the number is only useful against itself over time.
  */
 async function checkTypingKeepsUp(client: any): Promise<void> {
-	const uri = 'file:///gate/perf.py';
+	const uri = `${SERVER_ROOT}/gate/perf.py`;
 	await seed(client, uri, 'import sys\n');
 
 	const latencies: number[] = [];
@@ -375,37 +377,61 @@ async function checkCrashRecovery(api: any, root: vscode.Uri): Promise<void> {
 
 /**
  * The mirror mechanism against real workspace files, done the way the real
- * mirror must do it: onto `file:///` URIs.
+ * mirror must do it: onto `file:` URIs under the server root.
  *
  * `pyright/createFile` keys the VFS on `Uri.getPath()` while `didOpen` keys on
  * the whole URI, so under any non-`file:` scheme the two disagree and the module
- * resolves empty. Mirroring onto `file:///` makes path and URI the same thing.
+ * resolves empty. Mirroring onto `file:` makes path and URI the same thing.
+ *
+ * Seeding *inside* the root is load-bearing, not tidiness: a sibling import from
+ * a file outside every workspace folder does not resolve.
  */
 async function checkWorkspaceFile(client: any, root: vscode.Uri): Promise<void> {
 	const read = async (name: string) =>
 		new TextDecoder().decode(await vscode.workspace.fs.readFile(vscode.Uri.joinPath(root, name)));
 
-	const helperText = await read('helper.py');
-	const mainText = await read('main.py');
+	// Real workspace content, under names the real mirror will never produce, so
+	// this measures the protocol rather than accidentally re-testing the mirror.
+	await seed(client, `${SERVER_ROOT}/gate_lib.py`, await read('helper.py'));
 
-	// Mirrored but never opened in an editor, which is the whole point.
-	await seed(client, 'file:///ws/helper.py', helperText);
-	await seed(client, 'file:///ws/main.py', mainText);
+	const probeSource = 'from gate_lib import greet\n\ncheck_seeded = greet\n';
+	await seed(client, `${SERVER_ROOT}/gate_probe.py`, probeSource);
 
-	const text = await hover(client, 'file:///ws/main.py', mainText, 'greet', (t) => /name:\s*str/.test(t));
+	const text = await hover(client, `${SERVER_ROOT}/gate_probe.py`, probeSource, 'greet', (t) => /name:\s*str/.test(t));
 	record('workspace file: closed sibling module resolves',
 		Boolean(text && /name:\s*str/.test(text) && /->\s*str/.test(text)),
 		`helper.py never opened in an editor. hover: ${oneLine(text)}`);
 
 	// Opening the real file in an editor makes VS Code sync it under its own
-	// scheme, which pyright treats as a *different* file from the mirrored copy.
-	// Recorded, not asserted: reconciling this is the mirror's problem to solve.
+	// scheme. `uriConverters` rewrite it onto the server root, so the server has
+	// one identity for the file rather than an editor copy and a mirrored copy.
 	await vscode.window.showTextDocument(
 		await vscode.workspace.openTextDocument(vscode.Uri.joinPath(root, 'main.py'))
 	);
-	const viaEditor = await hover(client, vscode.Uri.joinPath(root, 'main.py').toString(true), mainText, 'greet');
-	record('NOTE: editor-scheme copy is a separate file to pyright', true,
-		`hover via ${root.scheme}: ${oneLine(viaEditor)}; the mirror must rewrite URIs, not just dedupe`);
+	const mapped = `${SERVER_ROOT}/main.py`;
+	const viaEditor = await hover(client, mapped, await read('main.py'), 'platform', (t) => /platform/.test(t));
+	record('editor document arrives under the server root', Boolean(viaEditor && /platform/.test(viaEditor)),
+		`opened as ${root.scheme}:, answered as ${mapped}: ${oneLine(viaEditor)}`);
+}
+
+/**
+ * The phase's acceptance criterion, and the only check that exercises the real
+ * mirror: `helper.py` is never opened in an editor, so the server can only know
+ * `greet` if the mirror walked the workspace and pushed its content.
+ *
+ * Runs before anything is hand-seeded. Everything below seeds by hand, which
+ * would make this pass for the wrong reason.
+ */
+async function checkMirror(root: vscode.Uri): Promise<void> {
+	const { uri, greet } = await openBenchImport(root);
+
+	const hovered = await waitFor(() => editorHover(uri, greet), (text) => Boolean(text && /name:\s*str/.test(text)));
+	record('mirror: a never-opened workspace module resolves', Boolean(hovered && /name:\s*str/.test(hovered)),
+		`helper.py mirrored, never opened. hover on greet: ${oneLine(hovered)}`);
+
+	const stillClosed = !vscode.workspace.textDocuments.some((doc) => doc.uri.path.endsWith('/helper.py'));
+	record('mirror: it really is closed', stillClosed,
+		stillClosed ? 'helper.py is not among the open documents' : 'helper.py got opened, so the check proved nothing');
 }
 
 /**
@@ -524,6 +550,17 @@ async function openBench(root: vscode.Uri) {
 		platform: new vscode.Position(line, text.indexOf('platform')),
 		dot: new vscode.Position(line, text.indexOf('.') + 1),
 	};
+}
+
+/** Locate block 2's `greet`, the symbol that only resolves through the mirror. */
+async function openBenchImport(root: vscode.Uri) {
+	const uri = vscode.Uri.joinPath(root, 'main.py');
+	const doc = await vscode.workspace.openTextDocument(uri);
+	await vscode.window.showTextDocument(doc);
+
+	const line = doc.getText().split('\n').findIndex((l) => l.includes('print(greet('));
+	assert(line >= 0, 'test/workspace/main.py no longer contains print(greet(');
+	return { uri, greet: new vscode.Position(line, doc.lineAt(line).text.indexOf('greet')) };
 }
 
 /** Hover through VS Code's own provider stack, flattened to text. */

@@ -36,7 +36,7 @@
 						"file:///typeshed"
 					],
 					"scope": "window",
-					"description": "Where the bundled pyright engine looks for typeshed stubs. Load-bearing: without it nothing resolves at all, builtins included, because the engine's own fallback looks for a 'typeshed-fallback' directory its browser bundle does not ship. Must be an absolute file:// URI — a bare path is resolved against the workspace root and never found."
+					"description": "Where the bundled pyright engine looks for typeshed stubs. Load-bearing: without it nothing resolves at all, builtins included, because the engine's own fallback looks for a 'typeshed-fallback' directory its browser bundle does not ship. Must be an absolute file:// URI; a bare path is resolved against the workspace root and never found."
 				},
 				"basedpyright.analysis.logLevel": {
 					"type": "string",
@@ -48,7 +48,7 @@
 					],
 					"default": "information",
 					"scope": "window",
-					"description": "How much the language server itself logs. 'trace' includes import resolution — every directory it searched for a module — which is the only practical way to debug a module that will not resolve. (This key belongs to the bundled pyright engine, not to this extension; the default matches the engine's own, so it changes nothing elsewhere.)"
+					"description": "How much the language server itself logs. 'trace' includes import resolution (every directory it searched for a module), which is the only practical way to debug a module that will not resolve. (This key belongs to the bundled pyright engine, not to this extension; the default matches the engine's own, so it changes nothing elsewhere.)"
 				},
 				"micropython-lsp.debug": {
 					"type": "boolean",
@@ -71,12 +71,12 @@
 		}
 	},
 	"scripts": {
-		"build": "node esbuild.config.mjs",
 		"typecheck": "tsc --noEmit",
-		"test": "vitest run",
-		"test:watch": "vitest",
-		"test:integration": "npm run build && npm run build:integration && vscode-test-web --headless --extensionDevelopmentPath=. --extensionTestsPath=./test/integration/dist/index.js ./test/workspace",
+		"build": "node esbuild.config.mjs",
 		"build:integration": "esbuild test/integration/index.ts --bundle --outfile=test/integration/dist/index.js --format=cjs --platform=browser --external:vscode --log-level=warning",
+		"test:integration": "npm run build && npm run build:integration && vscode-test-web --headless --extensionDevelopmentPath=. --extensionTestsPath=./test/integration/dist/index.js ./test/workspace",
+		"test:watch": "vitest",
+		"test": "vitest run",
 		"chrome": "npm run build && vscode-test-web --browser=chromium --extensionDevelopmentPath=. ./test/workspace"
 	},
 	"devDependencies": {
