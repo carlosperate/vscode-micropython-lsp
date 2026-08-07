@@ -1,4 +1,4 @@
-import { commands, OutputChannel, Uri, window, workspace, WorkspaceFolder } from 'vscode';
+import { commands, Disposable, OutputChannel, Uri, window, workspace, WorkspaceFolder } from 'vscode';
 import { CloseAction, ErrorAction, ErrorHandler, LanguageClientOptions } from 'vscode-languageclient';
 import { LanguageClient } from 'vscode-languageclient/browser';
 
@@ -32,6 +32,9 @@ export class AnalysisSession {
 	private workers: PyrightWorker | undefined;
 	private heartbeat: Heartbeat | undefined;
 	private mirror: Mirror | undefined;
+	private folders: Disposable | undefined;
+	/** The root the live session was built for, to spot a change that matters. */
+	private root: string | undefined;
 	private restarts: number[] = [];
 	private gaveUp = false;
 	private disposed = false;
@@ -56,11 +59,26 @@ export class AnalysisSession {
 	}
 
 	start(): Promise<void> {
+		// A root change is *Switch Workspace Storage* in the host app: the map, the
+		// reported folder and every mirrored URI are all derived from the root, so
+		// the only honest response is to rebuild against the new one.
+		this.folders ??= workspace.onDidChangeWorkspaceFolders(() => {
+			const root = this.workspaceRoot();
+			// `rebind` logs the change; this covers the silent case, a folder added
+			// or removed behind the one we analyse.
+			if (root === this.root) {
+				debug('workspace folders changed, root unchanged');
+				return;
+			}
+			void this.enqueue(() => this.rebind(root));
+		});
 		return this.enqueue(() => this.startNow());
 	}
 
 	async stop(): Promise<void> {
 		this.disposed = true;
+		this.folders?.dispose();
+		this.folders = undefined;
 		await this.enqueue(() => this.stopNow());
 	}
 
@@ -76,9 +94,16 @@ export class AnalysisSession {
 		this.workers = startPyrightWorker(this.workerUrl, debug);
 
 		// Rebuilt per start, so a restart picks up a workspace root that moved.
-		const uris = createUriMap(this.workspaceRoot());
+		this.root = this.workspaceRoot();
+		const uris = createUriMap(this.root);
 		const client = new LanguageClient('micropython-lsp', 'MicroPython LSP', this.clientOptions(uris), this.workers.worker);
 		this.client = client;
+
+		// Before `start()`, which is where the client subscribes to the document
+		// events itself. VS Code calls listeners in subscription order, and the
+		// mirror has to release a document before the client opens it.
+		this.mirror = createMirror({ sink: createClientSink(client), uris, folder: workspace.workspaceFolders?.[0], log });
+
 		try {
 			await client.start();
 		} catch (error) {
@@ -89,7 +114,6 @@ export class AnalysisSession {
 		// A fresh worker starts with an empty filesystem, so every start re-seeds.
 		// Not awaited: a large workspace must not hold up activation, and open
 		// files already work through the client's own document sync.
-		this.mirror = createMirror({ sink: createClientSink(client), uris, folder: workspace.workspaceFolders?.[0], log });
 		void this.mirror.seed().catch((error) => log(`mirror: seeding failed: ${String(error)}`));
 
 		// A heartbeat never reports a death after it has been disposed, so a probe
@@ -119,6 +143,18 @@ export class AnalysisSession {
 			this.workers?.dispose();
 			this.workers = undefined;
 		}
+	}
+
+	/**
+	 * Rebuild for a new workspace root. Deliberate, not a failure, so it must not
+	 * spend the restart budget: a user switching storage five times would
+	 * otherwise be told the server gave up.
+	 */
+	private async rebind(root: string): Promise<void> {
+		if (this.disposed) return;
+		log(`workspace root is now ${root}; rebuilding the session`);
+		await this.stopNow();
+		await this.startNow();
 	}
 
 	private async restart(reason: string): Promise<void> {
@@ -182,10 +218,15 @@ export class AnalysisSession {
 				protocol2Code: (value) => Uri.parse(uris.toWorkspaceUri(value) ?? value),
 			},
 			errorHandler: this.errorHandler(),
-			// Sent even when empty: the server destructures `files` unguarded, and
-			// only applies its embedded typeshed when it is an object. Device stubs
-			// go here once they are bundled.
-			initializationOptions: { files: {} },
+			// The server destructures `files` unguarded, and only applies its
+			// embedded typeshed when it is an object. Device stubs go here too once
+			// they are bundled.
+			//
+			// The placeholder makes the root exist in the engine's in-memory
+			// filesystem. Without it the engine tells the user "File or directory
+			// /workspace does not exist" whenever the mirror has nothing to seed,
+			// which is any workspace whose Python files are all open in editors.
+			initializationOptions: { files: { [`${Uri.parse(uris.serverRoot).path}/.keep`]: '' } },
 		};
 	}
 

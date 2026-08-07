@@ -97,6 +97,12 @@ export async function run(): Promise<void> {
 	// when they open a file in a fresh session.
 	await checkEditorExperience(root, activateStarted);
 	await checkMirror(root);
+	await checkDefinition(root);
+	await checkEditorRoundTrip(root);
+	await checkClosedFileDiagnostics(root);
+	await checkWatcher(client, root);
+	await checkOpenFileIsImportable(client, root);
+	await checkOpenFileDiagnostics(root);
 
 	// Everything is mirrored under the server root, which is what the extension
 	// reports as its workspace folder and therefore what the mirror will use.
@@ -432,6 +438,153 @@ async function checkMirror(root: vscode.Uri): Promise<void> {
 	const stillClosed = !vscode.workspace.textDocuments.some((doc) => doc.uri.path.endsWith('/helper.py'));
 	record('mirror: it really is closed', stillClosed,
 		stillClosed ? 'helper.py is not among the open documents' : 'helper.py got opened, so the check proved nothing');
+}
+
+/**
+ * Definition is the only way to catch a broken *reverse* mapping: hover answers
+ * carry no URI, so everything else here would pass while go-to-definition sent
+ * the user to a `file:///workspace/…` phantom that does not exist.
+ */
+async function checkDefinition(root: vscode.Uri): Promise<void> {
+	const { uri, greet } = await openBenchImport(root);
+
+	const found = await waitFor(
+		() => vscode.commands.executeCommand<vscode.Location[]>('vscode.executeDefinitionProvider', uri, greet),
+		(locations) => Boolean(locations?.length)
+	);
+	const target = found?.[0]?.uri;
+	const ok = target?.scheme === root.scheme && target.path.endsWith('/helper.py');
+	record('definition lands on the real workspace file', ok,
+		`definition of greet: ${target?.toString() ?? 'nothing'} (want ${root.scheme}:, not the server root)`);
+}
+
+/**
+ * The handover in both directions. Opening a mirrored file gives VS Code
+ * ownership of a URI the mirror already owns, and closing it makes VS Code drop
+ * the server's copy on the mirror's behalf. Both are silent when they break:
+ * everything still answers, just about an empty module.
+ */
+async function checkEditorRoundTrip(root: vscode.Uri): Promise<void> {
+	const { uri: mainUri, greet } = await openBenchImport(root);
+	const helperUri = vscode.Uri.joinPath(root, 'helper.py');
+	const resolves = (text: string | undefined) => Boolean(text && /name:\s*str/.test(text));
+
+	const doc = await vscode.workspace.openTextDocument(helperUri);
+	await vscode.window.showTextDocument(doc);
+	const whileOpen = await waitFor(() => editorHover(mainUri, greet), resolves);
+	record('round trip: resolves while the file is open in an editor', resolves(whileOpen),
+		`helper.py open, hover on greet: ${oneLine(whileOpen)}`);
+
+	await vscode.window.showTextDocument(doc);
+	await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+	await waitFor(
+		async () => vscode.workspace.textDocuments.some((d) => d.uri.path.endsWith('/helper.py')),
+		(open) => !open
+	);
+
+	const afterClose = await waitFor(() => editorHover(mainUri, greet), resolves);
+	record('round trip: still resolves after the editor closes it', resolves(afterClose),
+		`VS Code's didClose drops the server's copy; the mirror must re-seed. hover: ${oneLine(afterClose)}`);
+}
+
+/**
+ * The watcher path: a file created after the seed must reach the server without
+ * a reload. Writes into the bench folder and takes it away again.
+ */
+async function checkWatcher(client: any, root: vscode.Uri): Promise<void> {
+	const created = vscode.Uri.joinPath(root, 'gate_created.py');
+	const source = 'def spark() -> int:\n    return 1\n';
+
+	try {
+		await vscode.workspace.fs.writeFile(created, new TextEncoder().encode(source));
+	} catch (error) {
+		record('NOTE: watcher not exercised here', true,
+			`the harness mount is read-only (${oneLine(String(error))}); watcher coverage is the manual check`);
+		return;
+	}
+
+	try {
+		const text = await hover(client, `${SERVER_ROOT}/gate_created.py`, source, 'spark', (t) => /int/.test(t));
+		record('watcher: a file created after the seed is mirrored', Boolean(text && /int/.test(text)),
+			`created gate_created.py, hover on spark: ${oneLine(text)}`);
+	} finally {
+		await vscode.workspace.fs.delete(created).then(undefined, () => {});
+	}
+}
+
+/**
+ * A file the user creates is opened in an editor straight away, so the mirror
+ * never owns it. It still has to become importable: `didOpen` carries content
+ * but only `pyright/createFile` makes a path the resolver can find.
+ */
+async function checkOpenFileIsImportable(client: any, root: vscode.Uri): Promise<void> {
+	const created = vscode.Uri.joinPath(root, 'gate_open.py');
+	const source = 'def spark() -> int:\n    return 1\n';
+
+	try {
+		await vscode.workspace.fs.writeFile(created, new TextEncoder().encode(source));
+	} catch (error) {
+		record('NOTE: open-file import not exercised here', true, `read-only mount: ${oneLine(String(error))}`);
+		return;
+	}
+
+	try {
+		// Opened in an editor, exactly as the Explorer's New File leaves it.
+		await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(created));
+
+		const probe = 'from gate_open import spark\n\ncheck_open = spark\n';
+		await seed(client, `${SERVER_ROOT}/gate_probe_open.py`, probe);
+		const text = await hover(client, `${SERVER_ROOT}/gate_probe_open.py`, probe, 'spark', (t) => /int/.test(t));
+		record('a file open in an editor is importable by others', Boolean(text && /int/.test(text)),
+			`gate_open.py open in an editor, hover on the imported spark: ${oneLine(text)}`);
+	} finally {
+		await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+		await vscode.workspace.fs.delete(created).then(undefined, () => {});
+	}
+}
+
+/**
+ * Squiggles in an open file. `main.py` block 3 passes an `int` where a `str` is
+ * wanted, so a working pull answers with at least one problem.
+ *
+ * Recorded, not asserted, because it currently answers zero for a reason that is
+ * inside the engine rather than in this extension: the server never replies to
+ * `textDocument/diagnostic` at all. Asserting would paint the whole gate red
+ * over something we cannot fix here, while a `NOTE:` row still shows the day it
+ * starts working.
+ */
+async function checkOpenFileDiagnostics(root: vscode.Uri): Promise<void> {
+	const mainUri = vscode.Uri.joinPath(root, 'main.py');
+	await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(mainUri));
+
+	const problems = await waitFor(
+		async () => vscode.languages.getDiagnostics(mainUri),
+		(found) => found.length > 0,
+		3_000
+	);
+	record('NOTE: diagnostics for an OPEN file', true,
+		`${problems?.length ?? 0} problem(s) in main.py, expected at least 1 (block 3 passes int for str). ` +
+		'Zero means the pull went unanswered: no squiggles anywhere, for any file.');
+}
+
+/**
+ * The pull-model question, recorded rather than asserted because the answer is
+ * what decides the scope we can promise. `broken.py` is mirrored and never
+ * opened, and carries a type error the server certainly knows about.
+ */
+async function checkClosedFileDiagnostics(root: vscode.Uri): Promise<void> {
+	const brokenUri = vscode.Uri.joinPath(root, 'broken.py');
+	const problems = await waitFor(
+		async () => vscode.languages.getDiagnostics(brokenUri),
+		(found) => found.length > 0,
+		// Short: this waits out its whole budget every run, since the answer is
+		// always zero. Long enough to notice the day that changes, no longer.
+		3_000
+	);
+	const opened = vscode.workspace.textDocuments.some((d) => d.uri.path.endsWith('/broken.py'));
+	record('NOTE: diagnostics for a never-opened file', true,
+		`${problems?.length ?? 0} problem(s) for broken.py (opened in an editor: ${opened}). ` +
+		'Zero means VS Code only pulls for documents it knows, so Problems covers open files only.');
 }
 
 /**
