@@ -44,17 +44,42 @@ your project to get autocomplete.
 
 ## Using it alongside other Python extensions
 
-VS Code runs every Python language server that is installed, and shows all of
-their results at once.
-So, a general Python server (the Microsoft Python extensions like Pylance,
-Pyright) will provide information not applicable to embedded Python projects.
+VS Code runs every Python language server installed and shows all of their
+results combined.
 
-To select this extension as the language server for your project, add this to
-the VSCode workspace `.vscode/settings.json` file:
+As the generic Python extensions (like Microsoft's Pylance, Pyright, etc),
+might contain invalid stubs for MicroPython/CircuitPython, it is recommended to
+disable them for your project.
+
+VS Code does not have a setting to pick a single language server, so each of the
+others has to be switched off with its own settings.
+To disable the most common Python extensions, add this to your project's
+`.vscode/settings.json` file:
 
 ```json
 {
-  "python.languageServer": "carlosperate.micropython-lsp",
+  // Microsoft Python extension (Pylance, Jedi)
+  "python.languageServer": "None",
+  // Microsoft Pyright
+  "pyright.disableLanguageServices": true,
+  "python.analysis.ignore": ["**"],
+  // basedpyright
+  "basedpyright.disableLanguageServices": true,
+  "basedpyright.analysis.ignore": ["**"],
+  // Astral ty
+  "ty.disableLanguageServices": true,
+  // Meta Pyrefly
+  "python.pyrefly.disableLanguageServices": true,
+  "python.pyrefly.disableTypeErrors": true
+}
+```
+
+On the other hand, you can disable this specialised MicroPython/CircuitPython
+Python extension with this setting in your global or workspace settings:
+
+```json
+{
+  "micropython-lsp.enable": false
 }
 ```
 

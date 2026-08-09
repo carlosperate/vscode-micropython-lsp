@@ -66,9 +66,7 @@ export async function run(): Promise<void> {
 	const config = vscode.workspace.getConfiguration('micropython-lsp');
 	await config.update('debug', true, vscode.ConfigurationTarget.Global);
 	await config.update('trace.server', 'verbose', vscode.ConfigurationTarget.Global);
-	await vscode.workspace
-		.getConfiguration('basedpyright.analysis')
-		.update('logLevel', 'trace', vscode.ConfigurationTarget.Global);
+	await config.update('logLevel', 'trace', vscode.ConfigurationTarget.Global);
 
 	const activateStarted = Date.now();
 	const api = await ext.activate();
@@ -146,6 +144,7 @@ export async function run(): Promise<void> {
 
 	// Last: it replaces the client and worker that everything above holds.
 	await checkCrashRecovery(api, root);
+	await checkEnableToggle(api, root);
 	summarise();
 }
 
@@ -379,6 +378,51 @@ async function checkCrashRecovery(api: any, root: vscode.Uri): Promise<void> {
 	const after = api.pyright;
 	record('the replacement is a new worker', after !== undefined && after !== before,
 		`before=${describeWorker(before)} after=${describeWorker(after)}`);
+}
+
+/**
+ * `micropython-lsp.enable`, both ways.
+ *
+ * Only the extension host can show this: the setting is read in `activate` and
+ * again from a configuration listener, and the failure that matters is silent
+ * either way. Off leaving the workers running wastes a worker nobody owns; on
+ * failing to rebuild leaves the extension looking installed and dead until a
+ * reload.
+ */
+async function checkEnableToggle(api: any, root: vscode.Uri): Promise<void> {
+	const config = vscode.workspace.getConfiguration('micropython-lsp');
+
+	await config.update('enable', false, vscode.ConfigurationTarget.Global);
+	const stopped = await waitFor(async () => api.client, (client) => client === undefined);
+	record('disabling stops the language server', stopped === undefined,
+		`micropython-lsp.enable=false, client is ${stopped === undefined ? 'gone' : 'still running'}`);
+
+	await config.update('enable', true, vscode.ConfigurationTarget.Global);
+	const { uri, platform } = await openBench(root);
+	// Hover, not the client handle: a client that exists but never answers is the
+	// failure this is here to catch.
+	const restarted = await waitFor(
+		() => editorHover(uri, platform),
+		(text) => /LiteralString/.test(text ?? ''),
+		60_000
+	);
+	record('re-enabling starts a working server', /LiteralString/.test(restarted ?? ''),
+		`micropython-lsp.enable=true, hover on sys.platform: ${oneLine(restarted)}`);
+
+	// `update()` resolves once the value is written, not once our listener has
+	// finished with it, so this second pair lands while the first is still
+	// stopping. Unserialised, the enable half sees the client the disable half is
+	// still tearing down, does nothing, and the extension is left off with the
+	// setting saying on.
+	await config.update('enable', false, vscode.ConfigurationTarget.Global);
+	await config.update('enable', true, vscode.ConfigurationTarget.Global);
+	const settled = await waitFor(
+		() => editorHover(uri, platform),
+		(text) => /LiteralString/.test(text ?? ''),
+		60_000
+	);
+	record('a rapid off/on settles on', /LiteralString/.test(settled ?? ''),
+		`toggled without waiting between, hover on sys.platform: ${oneLine(settled)}`);
 }
 
 /**

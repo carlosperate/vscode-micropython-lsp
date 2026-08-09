@@ -25,20 +25,15 @@
 	],
 	"contributes": {
 		"configuration": {
-			"title": "MicroPython LSP",
+			"title": "MicroPython & CircuitPython IntelliSense LSP",
 			"properties": {
-				"basedpyright.analysis.typeshedPaths": {
-					"type": "array",
-					"items": {
-						"type": "string"
-					},
-					"default": [
-						"file:///typeshed"
-					],
+				"micropython-lsp.enable": {
+					"type": "boolean",
+					"default": true,
 					"scope": "window",
-					"description": "Where the bundled pyright engine looks for typeshed stubs. Load-bearing: without it nothing resolves at all, builtins included, because the engine's own fallback looks for a 'typeshed-fallback' directory its browser bundle does not ship. Must be an absolute file:// URI; a bare path is resolved against the workspace root and never found."
+					"description": "Enable or disable the MicroPython/CircuitPython language server. Turn this off for a project where you would rather use a general Python language server."
 				},
-				"basedpyright.analysis.logLevel": {
+				"micropython-lsp.logLevel": {
 					"type": "string",
 					"enum": [
 						"error",
@@ -48,13 +43,13 @@
 					],
 					"default": "information",
 					"scope": "window",
-					"description": "How much the language server itself logs. 'trace' includes import resolution (every directory it searched for a module), which is the only practical way to debug a module that will not resolve. (This key belongs to the bundled pyright engine, not to this extension; the default matches the engine's own, so it changes nothing elsewhere.)"
+					"description": "How much the bundled language server itself logs. Different levels are useful for debugging."
 				},
 				"micropython-lsp.debug": {
 					"type": "boolean",
 					"default": false,
 					"scope": "window",
-					"description": "Mirror language server logs to the developer console, including worker boot and background-worker relay activity. The output channel always records them; this makes them visible in DevTools and in headless test runs."
+					"description": "Developer/debugging setting. Mirror language server logs to the developer console, including worker boot and background-worker relay activity. The output channel always records them; this makes them visible in DevTools and in headless test runs."
 				},
 				"micropython-lsp.trace.server": {
 					"type": "string",
@@ -65,7 +60,7 @@
 					],
 					"default": "off",
 					"scope": "window",
-					"description": "Trace LSP traffic between VS Code and the Python language server. 'verbose' includes message bodies. Combine with micropython-lsp.debug to see it in the console."
+					"description": "Developer/debugging setting. Trace LSP traffic between VS Code and the Python language server. 'verbose' includes message bodies. Combine with micropython-lsp.debug to see it in the console."
 				}
 			}
 		}

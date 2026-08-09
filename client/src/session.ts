@@ -7,6 +7,7 @@ import { Heartbeat, startHeartbeat } from './heartbeat';
 import { debug, log, traceChannel } from './log';
 import { ping } from './ping';
 import { DEFAULT_RESTART_POLICY, decideRestart, RestartPolicy } from './restart-policy';
+import { serverSettings, type UserSettings } from './settings';
 import { createUriMap, SERVER_ROOT, type UriMap } from './uri-map';
 import { PyrightWorker, startPyrightWorker } from './worker';
 
@@ -218,6 +219,15 @@ export class AnalysisSession {
 				protocol2Code: (value) => Uri.parse(uris.toWorkspaceUri(value) ?? value),
 			},
 			errorHandler: this.errorHandler(),
+			// The engine asks for its config by the section names it was built with,
+			// which belong to another extension. Answering here is what keeps those
+			// names out of our manifest, and another extension's settings out of this
+			// engine. See `settings.ts`.
+			middleware: {
+				workspace: {
+					configuration: (params) => params.items.map((item) => serverSettings(item.section, readUserSettings())),
+				},
+			},
 			// The server destructures `files` unguarded, and only applies its
 			// embedded typeshed when it is an object. Device stubs go here too once
 			// they are bundled.
@@ -266,6 +276,11 @@ async function reportGiveUp(): Promise<void> {
 		reload
 	);
 	if (choice === reload) await commands.executeCommand('workbench.action.reloadWindow');
+}
+
+/** Read per request, so a level changed mid-session applies without a restart. */
+function readUserSettings(): UserSettings {
+	return { logLevel: workspace.getConfiguration('micropython-lsp').get('logLevel', 'information') };
 }
 
 /**
