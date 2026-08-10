@@ -587,6 +587,17 @@ async function checkDefinition(root: vscode.Uri): Promise<void> {
  * the server's copy on the mirror's behalf. Both are silent when they break:
  * everything still answers, just about an empty module.
  */
+/**
+ * The editor taking a mirrored file over, and the half the harness cannot show.
+ *
+ * Opening `helper.py` makes VS Code the owner: the mirror drops its copy and the
+ * client opens the real document, and the import must resolve across that
+ * handover. The other direction, re-seeding when the editor closes, is not
+ * testable here. `vscode-test-web` never disposes a text document, so
+ * `onDidCloseTextDocument` never fires however the editor is closed, and a check
+ * written against it passes only because the file is still open. Confirmed by
+ * waiting 25 s on `closeAllEditors` for an event that never came.
+ */
 async function checkEditorRoundTrip(root: vscode.Uri): Promise<void> {
 	const { uri: mainUri, greet } = await openBenchImport(root);
 	const helperUri = vscode.Uri.joinPath(root, 'helper.py');
@@ -598,16 +609,28 @@ async function checkEditorRoundTrip(root: vscode.Uri): Promise<void> {
 	record('round trip: resolves while the file is open in an editor', resolves(whileOpen),
 		`helper.py open, hover on greet: ${oneLine(whileOpen)}`);
 
-	await vscode.window.showTextDocument(doc);
+	const closed = whenClosed(helperUri, 2_000);
 	await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
-	await waitFor(
-		async () => vscode.workspace.textDocuments.some((d) => d.uri.path.endsWith('/helper.py')),
-		(open) => !open
-	);
+	record('NOTE: the re-seed on editor close is not observable here', true,
+		`onDidCloseTextDocument fired: ${await closed}. The harness keeps documents alive, so the mirror ` +
+		'never sees a close and this half is covered by the Phase 3 manual check instead.');
+}
 
-	const afterClose = await waitFor(() => editorHover(mainUri, greet), resolves);
-	record('round trip: still resolves after the editor closes it', resolves(afterClose),
-		`VS Code's didClose drops the server's copy; the mirror must re-seed. hover: ${oneLine(afterClose)}`);
+/** Resolves when VS Code really closes `uri`, which is what the mirror reacts to. */
+function whenClosed(uri: vscode.Uri, timeoutMs: number): Promise<boolean> {
+	return new Promise((resolve) => {
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const subscription = vscode.workspace.onDidCloseTextDocument((doc) => {
+			if (doc.uri.path !== uri.path) return;
+			clearTimeout(timer);
+			subscription.dispose();
+			resolve(true);
+		});
+		timer = setTimeout(() => {
+			subscription.dispose();
+			resolve(false);
+		}, timeoutMs);
+	});
 }
 
 /**
