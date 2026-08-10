@@ -1,3 +1,5 @@
+import { type Logger, SILENT_LOGGER } from './log-level';
+
 /**
  * Boot and relay for the prebuilt pyright worker.
  *
@@ -31,15 +33,15 @@ export interface PyrightWorker {
 }
 
 /** Takes its logger rather than importing one, so it stays free of `vscode`. */
-export function startPyrightWorker(workerUrl: string, log: (message: string) => void = () => {}): PyrightWorker {
+export function startPyrightWorker(workerUrl: string, log: Logger = SILENT_LOGGER): PyrightWorker {
 	const created: Worker[] = [];
 	let disposed = false;
 
 	const spawn = (name: string): Worker => {
 		const worker = new Worker(workerUrl, { name });
-		log(`${name}: created`);
-		worker.addEventListener('error', (e) => log(`${name} error: ${e.message || e}`));
-		worker.addEventListener('messageerror', (e) => log(`${name} messageerror: ${String(e)}`));
+		log.trace(`${name}: created`);
+		worker.addEventListener('error', (e) => log.error(`${name} error: ${e.message || e}`));
+		worker.addEventListener('messageerror', (e) => log.error(`${name} messageerror: ${String(e)}`));
 		created.push(worker);
 		return worker;
 	};
@@ -54,7 +56,7 @@ export function startPyrightWorker(workerUrl: string, log: (message: string) => 
 		// A relay after disposal would strand a worker nothing owns.
 		if (disposed) return;
 
-		log(`relaying browser/newWorker (port is MessagePort: ${message.port instanceof MessagePort})`);
+		log.trace(`relaying browser/newWorker (port is MessagePort: ${message.port instanceof MessagePort})`);
 		spawn('pyright-background').postMessage(
 			{ type: 'browser/boot', mode: 'background', initialData: message.initialData, port: message.port },
 			[message.port]
@@ -71,7 +73,7 @@ export function startPyrightWorker(workerUrl: string, log: (message: string) => 
 		dispose: () => {
 			if (disposed) return;
 			disposed = true;
-			log(`terminating ${created.length} worker(s)`);
+			log.trace(`terminating ${created.length} worker(s)`);
 			for (const worker of created) worker.terminate();
 			created.length = 0;
 		},

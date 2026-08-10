@@ -1,10 +1,11 @@
 import { commands, Disposable, OutputChannel, Uri, window, workspace, WorkspaceFolder } from 'vscode';
-import { CloseAction, ErrorAction, ErrorHandler, LanguageClientOptions } from 'vscode-languageclient';
+import { CloseAction, ErrorAction, ErrorHandler, LanguageClientOptions, Trace } from 'vscode-languageclient';
 import { LanguageClient } from 'vscode-languageclient/browser';
 
 import { createClientSink, createMirror, type Mirror } from './fs-bridge';
 import { Heartbeat, startHeartbeat } from './heartbeat';
-import { debug, log, traceChannel } from './log';
+import { logger } from './log';
+import { type LogLevel, resolveLogLevel, traceValueFor } from './log-level';
 import { ping } from './ping';
 import { DEFAULT_RESTART_POLICY, decideRestart, RestartPolicy } from './restart-policy';
 import { serverSettings, type UserSettings } from './settings';
@@ -18,6 +19,19 @@ import { PyrightWorker, startPyrightWorker } from './worker';
  * be added to every restart.
  */
 const STOP_TIMEOUT_MS = 1_000;
+
+/**
+ * Deliberately not `micropython-lsp`, and the only thing this id is used for.
+ *
+ * The language client's sole use of its id is `getConfiguration(id)` in
+ * `refreshTrace`, where it reads `<id>.trace.server` and applies it. Naming it
+ * after our settings section would let a value saved under
+ * `micropython-lsp.trace.server` set the trace level during startup, before
+ * `followTraceLevel` can derive the real one from `logLevel`. Pointing it at a
+ * section nobody contributes makes that read always answer `off`, so the level
+ * has exactly one source.
+ */
+const CLIENT_ID = 'micropython-lsp-server';
 
 /**
  * The language server as one replaceable unit: worker, client and liveness probe.
@@ -34,6 +48,7 @@ export class AnalysisSession {
 	private heartbeat: Heartbeat | undefined;
 	private mirror: Mirror | undefined;
 	private folders: Disposable | undefined;
+	private traceListener: Disposable | undefined;
 	/** The root the live session was built for, to spot a change that matters. */
 	private root: string | undefined;
 	private restarts: number[] = [];
@@ -68,7 +83,7 @@ export class AnalysisSession {
 			// `rebind` logs the change; this covers the silent case, a folder added
 			// or removed behind the one we analyse.
 			if (root === this.root) {
-				debug('workspace folders changed, root unchanged');
+				logger.trace('workspace folders changed, root unchanged');
 				return;
 			}
 			void this.enqueue(() => this.rebind(root));
@@ -91,19 +106,24 @@ export class AnalysisSession {
 	private async startNow(): Promise<void> {
 		if (this.disposed) return;
 
-		log(`starting pyright worker from ${this.workerUrl}`);
-		this.workers = startPyrightWorker(this.workerUrl, debug);
+		logger.info(`starting pyright worker from ${this.workerUrl}`);
+		this.workers = startPyrightWorker(this.workerUrl, logger);
 
 		// Rebuilt per start, so a restart picks up a workspace root that moved.
 		this.root = this.workspaceRoot();
 		const uris = createUriMap(this.root);
-		const client = new LanguageClient('micropython-lsp', 'MicroPython LSP', this.clientOptions(uris), this.workers.worker);
+		const client = new LanguageClient(CLIENT_ID, 'MicroPython LSP', this.clientOptions(uris), this.workers.worker);
 		this.client = client;
 
 		// Before `start()`, which is where the client subscribes to the document
 		// events itself. VS Code calls listeners in subscription order, and the
 		// mirror has to release a document before the client opens it.
-		this.mirror = createMirror({ sink: createClientSink(client), uris, folder: workspace.workspaceFolders?.[0], log });
+		this.mirror = createMirror({
+			sink: createClientSink(client),
+			uris,
+			folder: workspace.workspaceFolders?.[0],
+			log: logger,
+		});
 
 		try {
 			await client.start();
@@ -112,24 +132,28 @@ export class AnalysisSession {
 			throw error;
 		}
 
+		this.traceListener = followTraceLevel(client);
+
 		// A fresh worker starts with an empty filesystem, so every start re-seeds.
 		// Not awaited: a large workspace must not hold up activation, and open
 		// files already work through the client's own document sync.
-		void this.mirror.seed().catch((error) => log(`mirror: seeding failed: ${String(error)}`));
+		void this.mirror.seed().catch((error) => logger.error(`mirror: seeding failed: ${String(error)}`));
 
 		// A heartbeat never reports a death after it has been disposed, so a probe
 		// left in flight by a restart cannot kill the server that replaced it.
 		this.heartbeat = startHeartbeat({
 			probe: () => ping(client),
 			onDead: () => void this.enqueue(() => this.restart('the server stopped answering')),
-			log,
+			log: logger,
 		});
-		log('language client started');
+		logger.info('language client started');
 	}
 
 	private async stopNow(): Promise<void> {
 		this.heartbeat?.dispose();
 		this.heartbeat = undefined;
+		this.traceListener?.dispose();
+		this.traceListener = undefined;
 		// Before the client goes: a push landing on a stopped client throws, and a
 		// seed still walking would otherwise write into the worker that replaced it.
 		this.mirror?.dispose();
@@ -138,7 +162,7 @@ export class AnalysisSession {
 			await this.client?.stop(STOP_TIMEOUT_MS);
 		} catch (error) {
 			// Expected whenever the worker is already gone: nothing answers `shutdown`.
-			debug(`stopping the language client failed: ${String(error)}`);
+			logger.trace(`stopping the language client failed: ${String(error)}`);
 		} finally {
 			this.client = undefined;
 			this.workers?.dispose();
@@ -153,7 +177,7 @@ export class AnalysisSession {
 	 */
 	private async rebind(root: string): Promise<void> {
 		if (this.disposed) return;
-		log(`workspace root is now ${root}; rebuilding the session`);
+		logger.info(`workspace root is now ${root}; rebuilding the session`);
 		await this.stopNow();
 		await this.startNow();
 	}
@@ -169,20 +193,20 @@ export class AnalysisSession {
 
 		if (!decision.restart) {
 			this.gaveUp = true;
-			log(`${reason}; giving up after ${this.policy.maxRestarts} restarts`);
-			reportGiveUp().catch((error) => log(`could not report the failure: ${String(error)}`));
+			logger.error(`${reason}; giving up after ${this.policy.maxRestarts} restarts`);
+			reportGiveUp().catch((error) => logger.error(`could not report the failure: ${String(error)}`));
 			return;
 		}
 
 		this.restarts.push(now);
-		log(`${reason}; restarting (${decision.attempt} of ${this.policy.maxRestarts}) in ${decision.delayMs}ms`);
+		logger.warn(`${reason}; restarting (${decision.attempt} of ${this.policy.maxRestarts}) in ${decision.delayMs}ms`);
 		await delay(decision.delayMs);
 		if (this.disposed) return;
 
 		try {
 			await this.startNow();
 		} catch (error) {
-			log(`restart failed: ${String(error)}`);
+			logger.error(`restart failed: ${String(error)}`);
 			void this.enqueue(() => this.restart('the server failed to restart'));
 		}
 	}
@@ -199,7 +223,7 @@ export class AnalysisSession {
 		const folders = workspace.workspaceFolders ?? [];
 		if (folders.length > 1 && !this.warnedMultiRoot) {
 			this.warnedMultiRoot = true;
-			log(`${folders.length} workspace folders open; analysing only "${folders[0].name}"`);
+			logger.warn(`${folders.length} workspace folders open; analysing only "${folders[0].name}"`);
 		}
 		return folders[0]?.uri.toString() ?? SERVER_ROOT;
 	}
@@ -207,8 +231,9 @@ export class AnalysisSession {
 	private clientOptions(uris: UriMap): LanguageClientOptions {
 		return {
 			documentSelector: [{ language: 'python' }],
+			// Mirrored, not the real channel. The trace stream needs no separate
+			// channel: the client falls back to this one when none is given.
 			outputChannel: this.outputChannel,
-			traceOutputChannel: traceChannel(),
 			workspaceFolder: serverWorkspaceFolder(uris),
 			// Every URI the client sends or receives passes through here, so an
 			// editor document and its mirrored copy are one file to the server
@@ -243,7 +268,7 @@ export class AnalysisSession {
 	private errorHandler(): ErrorHandler {
 		return {
 			error: (error, _message, count) => {
-				log(`connection error (${count ?? 1}): ${error.message}`);
+				logger.warn(`connection error (${count ?? 1}): ${error.message}`);
 				// This is where a worker `error` event surfaces, and most are not
 				// fatal. Ask the server whether it is still there rather than guess.
 				void this.checkHealth();
@@ -280,7 +305,36 @@ async function reportGiveUp(): Promise<void> {
 
 /** Read per request, so a level changed mid-session applies without a restart. */
 function readUserSettings(): UserSettings {
-	return { logLevel: workspace.getConfiguration('micropython-lsp').get('logLevel', 'information') };
+	return { logLevel: readLogLevel() };
+}
+
+/** Normalised, so the engine is sent the same level our own messages are filtered by. */
+function readLogLevel(): LogLevel {
+	return resolveLogLevel(workspace.getConfiguration('micropython-lsp').get<string>('logLevel'));
+}
+
+/**
+ * Keep the protocol trace at the level `logLevel` implies, for as long as this
+ * client lives.
+ *
+ * The trace level is the language client's own, and it re-reads its
+ * `trace.server` key on *any* configuration change, not just one affecting it,
+ * resetting the level to what it finds. `CLIENT_ID` makes that read always
+ * answer `off`, so this is the only thing that ever turns tracing on, and the
+ * derived value has to be put back after every change. Registering here, after
+ * `start()`, is what puts this listener behind the client's.
+ */
+function followTraceLevel(client: LanguageClient): Disposable {
+	// Caught, not `void`ed: this sends a notification, so a worker that died
+	// between the change and this call rejects, and an unhandled rejection would
+	// report nothing anywhere. At `warn`, because failing to apply the level is an
+	// operational problem rather than the protocol detail `trace` carries.
+	const apply = () =>
+		client
+			.setTrace(Trace.fromString(traceValueFor(readLogLevel())))
+			.catch((error) => logger.warn(`could not update the trace level: ${String(error)}`));
+	apply();
+	return workspace.onDidChangeConfiguration(apply);
 }
 
 /**

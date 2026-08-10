@@ -1,6 +1,7 @@
 import { Disposable, RelativePattern, Uri, workspace, WorkspaceFolder } from 'vscode';
 import { LanguageClient } from 'vscode-languageclient/browser';
 
+import type { Logger } from './log-level';
 import { scanWorkspace } from './scan';
 import type { UriMap } from './uri-map';
 
@@ -100,7 +101,7 @@ export function createMirror(options: {
 	sink: MirrorSink;
 	uris: UriMap;
 	folder: WorkspaceFolder | undefined;
-	log: (message: string) => void;
+	log: Logger;
 }): Mirror {
 	const { sink, uris, folder, log } = options;
 	const subscriptions: Disposable[] = [];
@@ -154,7 +155,7 @@ export function createMirror(options: {
 			return true;
 		} catch (error) {
 			// Routine: a file deleted between the watcher event and this read.
-			log(`mirror: skipped ${uri.toString()}: ${String(error)}`);
+			log.trace(`mirror: skipped ${uri.toString()}: ${String(error)}`);
 			return false;
 		}
 	};
@@ -185,7 +186,7 @@ export function createMirror(options: {
 		try {
 			await send();
 		} catch (error) {
-			log(`mirror: could not ${what} ${uri.toString()}: ${String(error)}`);
+			log.warn(`mirror: could not ${what} ${uri.toString()}: ${String(error)}`);
 		}
 	};
 
@@ -235,7 +236,7 @@ export function createMirror(options: {
 			const scan = await scanWorkspace(async (relative) =>
 				workspace.fs.readDirectory(relative ? Uri.joinPath(folder.uri, ...relative.split('/')) : folder.uri)
 			);
-			for (const dir of scan.unreadable) log(`mirror: could not read directory "${dir || '.'}"`);
+			for (const dir of scan.unreadable) log.warn(`mirror: could not read directory "${dir || '.'}"`);
 
 			let seeded = 0;
 			for (const file of scan.files) {
@@ -244,7 +245,7 @@ export function createMirror(options: {
 			}
 			// Both numbers: the gap is what the editor already owns, which is the
 			// first thing to check when a module unexpectedly does not resolve.
-			log(`mirror: seeded ${seeded} of ${scan.files.length} file(s) from ${folder.uri.scheme}:`);
+			log.info(`mirror: seeded ${seeded} of ${scan.files.length} file(s) from ${folder.uri.scheme}:`);
 		},
 
 		dispose(): void {

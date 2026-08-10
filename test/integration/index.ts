@@ -39,6 +39,45 @@ function assert(condition: unknown, message: string): asserts condition {
 	if (!condition) throw new Error(message);
 }
 
+/**
+ * Collects what `mirrorLogsToConsole` prints.
+ *
+ * The mirror is the one part of logging with no unit test: it needs a real
+ * output channel and a real language client. Patching `console.log` here reads
+ * the same stream a developer reads in DevTools, from inside the extension host
+ * the extension runs in.
+ */
+const mirrored: string[] = [];
+let consoleCalls = 0;
+function captureMirroredLogs(): void {
+	const original = console.log.bind(console);
+	const patched = (...args: unknown[]) => {
+		consoleCalls++;
+		const first = args[0];
+		if (typeof first === 'string' && first.startsWith('[micropython-lsp]')) mirrored.push(first);
+		original(...args);
+	};
+	// The extension host installs its own console forwarder, so a plain
+	// assignment can be refused and leave the capture silently empty.
+	try {
+		Object.defineProperty(console, 'log', { value: patched, writable: true, configurable: true });
+	} catch {
+		console.log = patched;
+	}
+	assert(console.log === patched, 'could not patch console.log, so the mirror cannot be observed');
+}
+
+const tracedSince = (mark: number) => mirrored.slice(mark).filter((line) => line.includes('[Trace'));
+
+/**
+ * Boot lines only the engine writes, used to prove its logs reach the console.
+ *
+ * A canary: it is the engine's wording, not a protocol guarantee. If this fails
+ * after an engine bump, check the wording before suspecting the mirror. See the
+ * upgrade checklist in dev.md.
+ */
+const ENGINE_BOOT_LINES = /basedpyright|Auto-excluding|Server root directory/;
+
 const MOD_PROBE_SOURCE = 'def probe() -> str: ...\n';
 
 /** Hover predicate: the seeded module's real signature, not a mid-analysis `Unknown`. */
@@ -60,13 +99,14 @@ export async function run(): Promise<void> {
 	const ext = vscode.extensions.getExtension(EXTENSION_ID);
 	assert(ext, `${EXTENSION_ID} was not loaded by the extension host`);
 
-	// Before activate: the client reads the trace level during start().
+	// Before activate: the client derives the trace level during start().
 	// Global, not Workspace: the harness mounts the workspace read-only, so a
 	// workspace-scoped write cannot land.
 	const config = vscode.workspace.getConfiguration('micropython-lsp');
-	await config.update('debug', true, vscode.ConfigurationTarget.Global);
-	await config.update('trace.server', 'verbose', vscode.ConfigurationTarget.Global);
 	await config.update('logLevel', 'trace', vscode.ConfigurationTarget.Global);
+	await config.update('mirrorLogsToConsole', true, vscode.ConfigurationTarget.Global);
+
+	captureMirroredLogs();
 
 	const activateStarted = Date.now();
 	const api = await ext.activate();
@@ -94,6 +134,7 @@ export async function run(): Promise<void> {
 	// First, before anything is seeded: this is the state a user is actually in
 	// when they open a file in a fresh session.
 	await checkEditorExperience(root, activateStarted);
+	await checkLogging(root);
 	await checkMirror(root);
 	await checkDefinition(root);
 	await checkEditorRoundTrip(root);
@@ -262,7 +303,8 @@ async function probeBypass(
 	files: Record<string, string>,
 	analysisConfig: Record<string, unknown>
 ): Promise<BypassResult> {
-	const workers = startPyrightWorker(workerUrl, (m) => console.log(`[gate:bypass] ${m}`));
+	const relay = (m: string) => console.log(`[gate:bypass] ${m}`);
+	const workers = startPyrightWorker(workerUrl, { error: relay, warn: relay, info: relay, trace: relay });
 	const connection = createMessageConnection(
 		new BrowserMessageReader(workers.worker),
 		new BrowserMessageWriter(workers.worker)
@@ -730,6 +772,51 @@ function lastOccurrence(source: string, symbol: string): { line: number; charact
 		if (character >= 0) return { line, character };
 	}
 	return undefined;
+}
+
+/**
+ * Logging, which is only observable here: the mirror needs a real output channel
+ * and the level has to survive a running session.
+ *
+ * Hover is the traffic generator. It is one LSP round trip on demand, where the
+ * alternative, waiting for the 30 s heartbeat, would add a minute to the run.
+ */
+async function checkLogging(root: vscode.Uri): Promise<void> {
+	const config = vscode.workspace.getConfiguration('micropython-lsp');
+	const { uri, platform } = await openBench(root);
+
+	// `Params:` blocks are Verbose, and they carry whole file contents. Nothing
+	// may reach that level: `trace` derives `messages`, and the client id keeps a
+	// hand-written `micropython-lsp.trace.server` out of the decision.
+	const bodies = mirrored.filter((line) => line.includes('Params:'));
+	record('logging: the trace never reaches verbose', bodies.length === 0,
+		`${mirrored.length} mirrored line(s), ${bodies.length} carrying message bodies`);
+
+	const engine = mirrored.filter((line) => ENGINE_BOOT_LINES.test(line));
+	const ours = mirrored.filter((line) => line.includes('starting pyright worker') || line.includes('mirror: seeded'));
+	record('logging: the console mirror carries both sides', engine.length > 0 && ours.length > 0,
+		`${engine.length} engine line(s) and ${ours.length} of ours, from ${consoleCalls} console call(s)`);
+
+	// Both directions are polled rather than slept on. A configuration change
+	// reaches our listener whenever it reaches it, and a fixed wait would either
+	// be slower than it needs to be or fail on a loaded runner.
+	await config.update('logLevel', 'error', vscode.ConfigurationTarget.Global);
+	const quiet = await waitFor(() => hoverAndCountTrace(uri, platform), (count) => count === 0);
+	record('logging: lowering logLevel silences the trace', quiet === 0,
+		`a hover at logLevel=error produced ${quiet} trace line(s)`);
+
+	await config.update('logLevel', 'trace', vscode.ConfigurationTarget.Global);
+	const loud = await waitFor(() => hoverAndCountTrace(uri, platform), (count) => count > 0);
+	record('logging: raising it turns the trace back on', (loud ?? 0) > 0,
+		`a hover at logLevel=trace produced ${loud} trace line(s)`);
+}
+
+/** One hover, and how much protocol trace it mirrored. */
+async function hoverAndCountTrace(uri: vscode.Uri, position: vscode.Position): Promise<number> {
+	const mark = mirrored.length;
+	await editorHover(uri, position);
+	await delay(250); // the trace is written as the response is handled, not before
+	return tracedSince(mark).length;
 }
 
 /** Open the bench in an editor and locate block 1, which two checks both probe. */

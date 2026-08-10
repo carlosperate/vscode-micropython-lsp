@@ -1,3 +1,5 @@
+import { type Logger, SILENT_LOGGER } from './log-level';
+
 /**
  * Liveness probe for the language server.
  *
@@ -20,7 +22,7 @@ export interface HeartbeatOptions {
 	timeoutMs?: number;
 	/** Consecutive misses before `onDead`. */
 	missesBeforeDead?: number;
-	log?: (message: string) => void;
+	log?: Logger;
 }
 
 export interface Heartbeat {
@@ -33,7 +35,7 @@ export function startHeartbeat(options: HeartbeatOptions): Heartbeat {
 	const intervalMs = options.intervalMs ?? 30_000;
 	const timeoutMs = options.timeoutMs ?? 8_000;
 	const missesBeforeDead = options.missesBeforeDead ?? 2;
-	const log = options.log ?? (() => {});
+	const log = options.log ?? SILENT_LOGGER;
 
 	let misses = 0;
 	let disposed = false;
@@ -79,7 +81,7 @@ export function startHeartbeat(options: HeartbeatOptions): Heartbeat {
 		}
 
 		misses += 1;
-		log(`no answer within ${timeoutMs}ms (miss ${misses} of ${missesBeforeDead})`);
+		log.warn(`no answer within ${timeoutMs}ms (miss ${misses} of ${missesBeforeDead})`);
 		if (misses >= missesBeforeDead) {
 			dispose();
 			options.onDead();

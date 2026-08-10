@@ -1,18 +1,17 @@
-import { ExtensionContext, OutputChannel, Uri, workspace } from 'vscode';
+import { ExtensionContext, Uri, workspace } from 'vscode';
 
-import { initLogging, log } from './log';
+import { clientChannel, initLogging, logger } from './log';
 import { AnalysisSession } from './session';
 
 const ENABLE_SECTION = 'micropython-lsp.enable';
 
 let session: AnalysisSession | undefined;
 let workerUrl: string;
-let outputChannel: OutputChannel;
 /** Serialises the enable transitions, which can otherwise interleave. */
 let queue: Promise<unknown> = Promise.resolve();
 
 export async function activate(context: ExtensionContext) {
-	outputChannel = initLogging();
+	initLogging(context);
 	workerUrl = Uri.joinPath(context.extensionUri, 'assets/pyright.worker.js').toString(true);
 
 	// Before the first start, not after: starting fetches the worker and waits for
@@ -23,7 +22,7 @@ export async function activate(context: ExtensionContext) {
 			if (!event.affectsConfiguration(ENABLE_SECTION)) return;
 			// Nothing awaits this, so a failed start has to be reported here or it
 			// becomes an unhandled rejection with nothing in the output channel.
-			void enqueue(syncEnabled).catch((error) => log(`could not apply ${ENABLE_SECTION}: ${String(error)}`));
+			void enqueue(syncEnabled).catch((error) => logger.error(`could not apply ${ENABLE_SECTION}: ${String(error)}`));
 		})
 	);
 
@@ -70,7 +69,7 @@ async function syncEnabled(): Promise<void> {
 	if (enabled === running) return;
 
 	if (!enabled) {
-		log(`${ENABLE_SECTION} = false; stopping the language server`);
+		logger.info(`${ENABLE_SECTION} = false; stopping the language server`);
 		const stopping = session;
 		// Cleared first: a stop takes a round trip, and until it returns the
 		// extension must already look off to anything reading this.
@@ -79,11 +78,11 @@ async function syncEnabled(): Promise<void> {
 		return;
 	}
 
-	log(`${ENABLE_SECTION} = true; starting the language server`);
+	logger.info(`${ENABLE_SECTION} = true; starting the language server`);
 	// Off means off: the large basedpyright worker is only fetched here, so a
 	// project that would rather use a different Python server pays nothing for
 	// this one being installed.
-	const starting = new AnalysisSession(workerUrl, outputChannel);
+	const starting = new AnalysisSession(workerUrl, clientChannel());
 	session = starting;
 	try {
 		await starting.start();

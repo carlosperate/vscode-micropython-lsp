@@ -1,20 +1,48 @@
-import { OutputChannel, window, workspace } from 'vscode';
+import { Disposable, ExtensionContext, OutputChannel, window, workspace } from 'vscode';
+
+import { DEFAULT_LOG_LEVEL, type Logger, type LogLevel, resolveLogLevel, shouldLog } from './log-level';
 
 /**
- * Everything goes to the "MicroPython LSP" output channel. With
- * `micropython-lsp.debug` on it is mirrored to the console too, which is the
- * only place worker boot and relay activity is visible, and the only thing a
- * headless test run captures.
+ * One channel for all three streams: this extension's own logs, the engine's,
+ * and the LSP protocol trace. `micropython-lsp.logLevel` sizes it, and
+ * `micropython-lsp.mirrorLogsToConsole` decides whether it is also printed to
+ * the developer console, which is the only place a headless run can read it.
  */
 
-let channel: OutputChannel | undefined;
-let debugEnabled = false;
+/** The language client's own labels, so one channel reads as one log. */
+const LABELS: Record<LogLevel, string> = {
+	error: 'Error',
+	warning: 'Warn',
+	information: 'Info',
+	trace: 'Trace',
+};
 
-export function initLogging(): OutputChannel {
+let channel: OutputChannel | undefined;
+let listener: Disposable | undefined;
+let level: LogLevel = DEFAULT_LOG_LEVEL;
+let mirrorToConsole = false;
+
+/** Once, from `activate`, so the channel and its listener go when the extension does. */
+export function initLogging(context: ExtensionContext): OutputChannel {
+	const target = ensureChannel();
+	context.subscriptions.push(
+		new Disposable(() => {
+			listener?.dispose();
+			target.dispose();
+			// Cleared, or a reactivation in the same host would log into the
+			// channel this just disposed.
+			channel = undefined;
+			listener = undefined;
+		})
+	);
+	return target;
+}
+
+function ensureChannel(): OutputChannel {
 	if (!channel) {
 		channel = window.createOutputChannel('MicroPython LSP');
-		workspace.onDidChangeConfiguration((e) => {
-			if (e.affectsConfiguration('micropython-lsp.debug')) refresh();
+		listener = workspace.onDidChangeConfiguration((e) => {
+			if (e.affectsConfiguration('micropython-lsp')) refresh();
 		});
 	}
 	refresh();
@@ -22,50 +50,71 @@ export function initLogging(): OutputChannel {
 }
 
 function refresh(): void {
-	debugEnabled = workspace.getConfiguration('micropython-lsp').get<boolean>('debug', false);
+	const config = workspace.getConfiguration('micropython-lsp');
+	level = resolveLogLevel(config.get<string>('logLevel'));
+	mirrorToConsole = config.get<boolean>('mirrorLogsToConsole', false);
 }
 
-/** Always logged. For things a user might need to see. */
-export function log(message: string): void {
-	channel?.appendLine(message);
-	if (debugEnabled) console.log(`[micropython-lsp] ${message}`);
+export const logger: Logger = {
+	error: (message) => write('error', message),
+	warn: (message) => write('warning', message),
+	info: (message) => write('information', message),
+	trace: (message) => write('trace', message),
+};
+
+function write(messageLevel: LogLevel, message: string): void {
+	if (!shouldLog(messageLevel, level)) return;
+	const line = `[${LABELS[messageLevel].padEnd(5)} - ${new Date().toLocaleTimeString()}] ${message}`;
+	channel?.appendLine(line);
+	mirror(line);
 }
 
-/** Only when `micropython-lsp.debug` is on. For protocol-level detail. */
-export function debug(message: string): void {
-	if (!debugEnabled) return;
-	channel?.appendLine(message);
-	console.log(`[micropython-lsp] ${message}`);
+function mirror(line: string): void {
+	if (mirrorToConsole) console.log(`[micropython-lsp] ${line}`);
 }
 
 /**
- * Trace sink for the language client, sharing the same channel.
+ * The channel handed to the language client, so the engine's logs and the LSP
+ * trace are mirrored like ours rather than going straight to the real channel.
  *
- * Each method must delegate to its namesake. `logTrace` writes whole records
- * with `appendLine` and no trailing newline of its own, so routing that to
- * `append` runs the entire trace together into one unreadable line.
+ * Nothing is filtered here. The engine self-filters against the same
+ * `logLevel` we send it, and the trace stream is gated by the trace level
+ * derived from it, so a second filter could only drop lines we asked for.
+ *
+ * `dispose` is inert on purpose: the real channel outlives any one client, and
+ * the client only disposes a channel it created itself.
+ *
+ * Every member of `OutputChannel` is implemented. The cast is for `show` alone,
+ * which has a second, deprecated overload taking a `ViewColumn`.
  */
-export function traceChannel(): OutputChannel {
-	const target = initLogging();
-	const mirror = (value: string) => {
-		if (debugEnabled) console.log(`[lsp] ${value}`);
-	};
+export function clientChannel(): OutputChannel {
+	const target = ensureChannel();
+	// `append` carries only the first half of a trace record, so it is held back
+	// to keep one channel line as one console line.
+	let partial = '';
 	return {
-		name: 'MicroPython LSP Trace',
+		name: target.name,
 		append: (value: string) => {
 			target.append(value);
-			mirror(value);
+			partial += value;
 		},
 		appendLine: (value: string) => {
 			target.appendLine(value);
-			mirror(value);
+			mirror(partial + value);
+			partial = '';
 		},
 		replace: (value: string) => {
 			target.replace(value);
+			partial = '';
 			mirror(value);
 		},
-		clear: () => target.clear(),
-		show: () => target.show(),
+		clear: () => {
+			target.clear();
+			partial = '';
+		},
+		// The argument matters: the client reveals the channel with `show(true)`
+		// from an error notification, and dropping it would steal focus.
+		show: (preserveFocus?: boolean) => target.show(preserveFocus),
 		hide: () => target.hide(),
 		dispose: () => {},
 	} as OutputChannel;
