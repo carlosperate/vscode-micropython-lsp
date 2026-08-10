@@ -10,7 +10,7 @@ import { ping } from './ping';
 import { DEFAULT_RESTART_POLICY, decideRestart, RestartPolicy } from './restart-policy';
 import { serverSettings, type UserSettings } from './settings';
 import { createUriMap, SERVER_ROOT, type UriMap } from './uri-map';
-import { PyrightWorker, startPyrightWorker } from './worker';
+import { type EngineUrls, PyrightWorker, startPyrightWorker } from './worker';
 
 /**
  * A dead server never answers `shutdown`, and dead is what this path mostly
@@ -59,7 +59,7 @@ export class AnalysisSession {
 	private queue: Promise<unknown> = Promise.resolve();
 
 	constructor(
-		private readonly workerUrl: string,
+		private readonly urls: EngineUrls,
 		private readonly outputChannel: OutputChannel,
 		private readonly policy: RestartPolicy = DEFAULT_RESTART_POLICY
 	) {}
@@ -106,8 +106,8 @@ export class AnalysisSession {
 	private async startNow(): Promise<void> {
 		if (this.disposed) return;
 
-		logger.info(`starting pyright worker from ${this.workerUrl}`);
-		this.workers = startPyrightWorker(this.workerUrl, logger);
+		logger.info(`starting pyright worker from ${this.urls.engine}`);
+		this.workers = startPyrightWorker(this.urls, logger);
 
 		// Rebuilt per start, so a restart picks up a workspace root that moved.
 		this.root = this.workspaceRoot();
@@ -269,8 +269,10 @@ export class AnalysisSession {
 		return {
 			error: (error, _message, count) => {
 				logger.warn(`connection error (${count ?? 1}): ${error.message}`);
-				// This is where a worker `error` event surfaces, and most are not
-				// fatal. Ask the server whether it is still there rather than guess.
+				// Reached by a protocol failure, not by a dead worker: VS Code's
+				// nested-worker polyfill forwards no `error` event, so a worker that
+				// throws arrives here as silence. Most of what does arrive is not
+				// fatal, so ask the server whether it is still there rather than guess.
 				void this.checkHealth();
 				return { action: ErrorAction.Continue, handled: true };
 			},

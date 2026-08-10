@@ -2,17 +2,21 @@ import { ExtensionContext, Uri, workspace } from 'vscode';
 
 import { clientChannel, initLogging, logger } from './log';
 import { AnalysisSession } from './session';
+import { type EngineUrls } from './worker';
 
 const ENABLE_SECTION = 'micropython-lsp.enable';
 
 let session: AnalysisSession | undefined;
-let workerUrl: string;
+let engineUrls: EngineUrls;
 /** Serialises the enable transitions, which can otherwise interleave. */
 let queue: Promise<unknown> = Promise.resolve();
 
 export async function activate(context: ExtensionContext) {
 	initLogging(context);
-	workerUrl = Uri.joinPath(context.extensionUri, 'assets/pyright.worker.js').toString(true);
+	engineUrls = {
+		host: Uri.joinPath(context.extensionUri, 'client/dist/engineWorkerMain.js').toString(true),
+		engine: Uri.joinPath(context.extensionUri, 'assets/pyright.worker.js').toString(true),
+	};
 
 	// Before the first start, not after: starting fetches the worker and waits for
 	// the LSP handshake, and a setting changed during those seconds would
@@ -82,7 +86,7 @@ async function syncEnabled(): Promise<void> {
 	// Off means off: the large basedpyright worker is only fetched here, so a
 	// project that would rather use a different Python server pays nothing for
 	// this one being installed.
-	const starting = new AnalysisSession(workerUrl, clientChannel());
+	const starting = new AnalysisSession(engineUrls, clientChannel());
 	session = starting;
 	try {
 		await starting.start();

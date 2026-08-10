@@ -26,9 +26,10 @@ print(greet("micro:bit"))
 counter = Counter(start=10)
 counter.increment()  # `.` after `counter` should offer `increment` and `value`
 
-# 3. TYPE ERROR: needs the mirror, then the type-checking mode.
-#    Expect exactly one squiggle here: `int` is not `str`. If the whole file is
-#    squiggled instead, the type checking mode is stricter than intended.
+# 3. TYPE ERROR: works today.
+#    Expect a squiggle here saying `int` is not `str` (reportArgumentType).
+#    A second one about the unused result comes from the engine's default
+#    strictness and should disappear once the type checking mode is set.
 greet(42)
 
 # 4. DEVICE STUBS: expected to FAIL until device stubs are bundled.

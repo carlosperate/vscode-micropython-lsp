@@ -5,11 +5,6 @@ CircuitPython projects.
 
 Works on VSCode web, and compatible editors, in the browser.
 
-> **Type checking is not available yet.** The bundled engine does not answer the
-> editor's requests for problems, so no errors or warnings are reported and no
-> squiggles appear. Everything else, autocomplete, hover and go to definition,
-> works. This will be fixed before 1.0.
-
 ## Why this extension vs a generic Python LSP
 
 The goal of this extension is to provide a language server specifically

@@ -4,8 +4,9 @@ import * as vscode from 'vscode';
 // client stack, and nothing new has to be declared to import it.
 import { BrowserMessageReader, BrowserMessageWriter, createMessageConnection } from 'vscode-languageclient/browser';
 
+import { SILENT_LOGGER } from '../../client/src/log-level';
 import { SERVER_ROOT } from '../../client/src/uri-map';
-import { startPyrightWorker } from '../../client/src/worker';
+import { type EngineUrls, startPyrightWorker } from '../../client/src/worker';
 import { BYPASS_PROBE, replacementTypeshed } from './typeshed-fixture';
 
 const EXTENSION_ID = 'carlosperate.micropython-lsp';
@@ -179,8 +180,9 @@ export async function run(): Promise<void> {
 	record('the liveness probe reports a healthy server as alive', await api.checkHealth(),
 		'an unimplemented ping must come back as MethodNotFound, not as silence');
 
-	// Before crash recovery, which leaves a different client behind. Uses its own
-	// throwaway workers, so it does not disturb the session above.
+	// Before crash recovery, which leaves a different client behind. Both use their
+	// own throwaway workers, so they do not disturb the session above.
+	await checkEngineLoadFailure(ext);
 	await checkTypeshedBypass(ext);
 
 	// Last: it replaces the client and worker that everything above holds.
@@ -230,6 +232,38 @@ async function checkTypingKeepsUp(client: any): Promise<void> {
 }
 
 /**
+ * A worker that cannot load its engine has to say so.
+ *
+ * VS Code's nested-worker polyfill carries `// todo onerror` where it would
+ * forward an error out of a nested worker, so nothing on our side ever hears the
+ * exception: without the entry reporting it by hand, a 404 on the engine is
+ * perfectly silent and looks exactly like a slow start. Only a real extension
+ * host can show that, since it is the polyfill that swallows it.
+ */
+async function checkEngineLoadFailure(ext: vscode.Extension<any>): Promise<void> {
+	const errors: string[] = [];
+	const workers = startPyrightWorker(
+		{
+			host: vscode.Uri.joinPath(ext.extensionUri, 'client/dist/engineWorkerMain.js').toString(true),
+			engine: vscode.Uri.joinPath(ext.extensionUri, 'assets/no-such-engine.js').toString(true),
+		},
+		{ ...SILENT_LOGGER, error: (message) => errors.push(message) }
+	);
+
+	try {
+		const reported = await waitFor(
+			async () => errors.find((line) => line.includes('could not load')),
+			Boolean,
+			15_000
+		);
+		record('a worker that cannot load its engine reports it', Boolean(reported),
+			reported ?? 'nothing was logged, so a bad engine URL would fail silently');
+	} finally {
+		workers.dispose();
+	}
+}
+
+/**
  * The typeshed bypass gate: does a replacement typeshed root displace the embedded one?
  *
  * Both delivery mechanisms are read at `initialize`, so neither can be tested by
@@ -243,12 +277,15 @@ async function checkTypingKeepsUp(client: any): Promise<void> {
  * like a successful bypass if you only assert that `subprocess` is gone.
  */
 async function checkTypeshedBypass(ext: vscode.Extension<any>): Promise<void> {
-	const workerUrl = vscode.Uri.joinPath(ext.extensionUri, 'assets/pyright.worker.js').toString(true);
+	const engine: EngineUrls = {
+		host: vscode.Uri.joinPath(ext.extensionUri, 'client/dist/engineWorkerMain.js').toString(true),
+		engine: vscode.Uri.joinPath(ext.extensionUri, 'assets/pyright.worker.js').toString(true),
+	};
 	const root = '/mp-typeshed';
 	const files = replacementTypeshed(root);
 
 	// A: typeshedPaths, the channel the contributed setting feeds.
-	await recordBypassCase('A: typeshedPaths configuration', workerUrl, files, {
+	await recordBypassCase('A: typeshedPaths configuration', engine, files, {
 		typeshedPaths: [`file://${root}`],
 		logLevel: 'trace',
 	});
@@ -257,7 +294,7 @@ async function checkTypeshedBypass(ext: vscode.Extension<any>): Promise<void> {
 	// embedded root so anything that works is the config file's doing.
 	await recordBypassCase(
 		'B: seeded pyrightconfig.json',
-		workerUrl,
+		engine,
 		{ ...files, '/pyrightconfig.json': JSON.stringify({ typeshedPath: root, stubPath: `${root}/stubs` }, null, 2) },
 		{ typeshedPaths: ['file:///typeshed'], logLevel: 'trace' }
 	);
@@ -271,12 +308,12 @@ async function checkTypeshedBypass(ext: vscode.Extension<any>): Promise<void> {
  */
 async function recordBypassCase(
 	mechanism: string,
-	workerUrl: string,
+	engine: EngineUrls,
 	files: Record<string, string>,
 	analysisConfig: Record<string, unknown>
 ): Promise<void> {
 	try {
-		recordBypass(mechanism, await probeBypass(workerUrl, files, analysisConfig));
+		recordBypass(mechanism, await probeBypass(engine, files, analysisConfig));
 	} catch (error) {
 		record(`typeshed bypass, ${mechanism}`, false, `the probe threw: ${String(error)}`);
 	}
@@ -299,12 +336,12 @@ interface BypassResult {
  * settings plumbing that the rest of the suite already exercises.
  */
 async function probeBypass(
-	workerUrl: string,
+	engine: EngineUrls,
 	files: Record<string, string>,
 	analysisConfig: Record<string, unknown>
 ): Promise<BypassResult> {
 	const relay = (m: string) => console.log(`[gate:bypass] ${m}`);
-	const workers = startPyrightWorker(workerUrl, { error: relay, warn: relay, info: relay, trace: relay });
+	const workers = startPyrightWorker(engine, { error: relay, warn: relay, info: relay, trace: relay });
 	const connection = createMessageConnection(
 		new BrowserMessageReader(workers.worker),
 		new BrowserMessageWriter(workers.worker)
@@ -630,33 +667,52 @@ async function checkOpenFileIsImportable(client: any, root: vscode.Uri): Promise
 }
 
 /**
- * Squiggles in an open file. `main.py` block 3 passes an `int` where a `str` is
- * wanted, so a working pull answers with at least one problem.
+ * Squiggles in an open file, which is as far as a pull model reaches.
  *
- * Recorded, not asserted, because it currently answers zero for a reason that is
- * inside the engine rather than in this extension: the server never replies to
- * `textDocument/diagnostic` at all. Asserting would paint the whole gate red
- * over something we cannot fix here, while a `NOTE:` row still shows the day it
- * starts working.
+ * This is the check that guards `patch-worker.mjs`. Unpatched, the engine never
+ * answers `textDocument/diagnostic` at all and this reports zero, which is what
+ * a build that dropped the patch, or an engine bump that moved the call site,
+ * would look like.
+ *
+ * It asserts on the rule that fired, not on the message or the count: block 3's
+ * `greet(42)` passes an `int` where a `str` is wanted, so `reportArgumentType`
+ * is proof the engine really checked types rather than merely reporting the
+ * unresolved imports further down. Rule ids are stable identifiers; the prose
+ * and the severities around them are not, and Phase 5 will change the mode that
+ * decides how many of the other eight problems survive.
  */
 async function checkOpenFileDiagnostics(root: vscode.Uri): Promise<void> {
 	const mainUri = vscode.Uri.joinPath(root, 'main.py');
-	await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(mainUri));
+	const doc = await vscode.workspace.openTextDocument(mainUri);
+	await vscode.window.showTextDocument(doc);
 
+	const line = doc.getText().split('\n').findIndex((l) => l.startsWith('greet(42)'));
+	assert(line >= 0, 'test/workspace/main.py no longer contains greet(42)');
+
+	const here = (d: vscode.Diagnostic) => d.range.start.line === line;
+	const argumentType = (d: vscode.Diagnostic) => ruleOf(d) === 'reportArgumentType';
 	const problems = await waitFor(
 		async () => vscode.languages.getDiagnostics(mainUri),
-		(found) => found.length > 0,
-		3_000
+		(found) => found.filter(here).some(argumentType)
 	);
-	record('NOTE: diagnostics for an OPEN file', true,
-		`${problems?.length ?? 0} problem(s) in main.py, expected at least 1 (block 3 passes int for str). ` +
-		'Zero means the pull went unanswered: no squiggles anywhere, for any file.');
+
+	const onBlock3 = (problems ?? []).filter(here);
+	record('diagnostics reach the Problems panel for an open file', onBlock3.some(argumentType),
+		`${problems?.length ?? 0} problem(s) in main.py, ${onBlock3.length} on greet(42) ` +
+		`[${onBlock3.map(ruleOf).join(', ')}]: ${oneLine(onBlock3.find(argumentType)?.message)}`);
+}
+
+/** The rule id behind a diagnostic. VS Code carries it as a string or a link. */
+function ruleOf(diagnostic: vscode.Diagnostic): string {
+	const code = diagnostic.code;
+	return String(typeof code === 'object' && code !== null ? code.value : code);
 }
 
 /**
- * The pull-model question, recorded rather than asserted because the answer is
- * what decides the scope we can promise. `broken.py` is mirrored and never
- * opened, and carries a type error the server certainly knows about.
+ * The pull-model limit, recorded rather than asserted because it is the scope we
+ * promise rather than a thing that can break. `broken.py` is mirrored and never
+ * opened, and carries a type error the server certainly knows about; VS Code
+ * simply never asks about a URI it has no document for, so nobody pulls.
  */
 async function checkClosedFileDiagnostics(root: vscode.Uri): Promise<void> {
 	const brokenUri = vscode.Uri.joinPath(root, 'broken.py');
@@ -670,7 +726,7 @@ async function checkClosedFileDiagnostics(root: vscode.Uri): Promise<void> {
 	const opened = vscode.workspace.textDocuments.some((d) => d.uri.path.endsWith('/broken.py'));
 	record('NOTE: diagnostics for a never-opened file', true,
 		`${problems?.length ?? 0} problem(s) for broken.py (opened in an editor: ${opened}). ` +
-		'Zero means VS Code only pulls for documents it knows, so Problems covers open files only.');
+		'Zero is expected: Problems covers open files only, while the check below covers open ones.');
 }
 
 /**

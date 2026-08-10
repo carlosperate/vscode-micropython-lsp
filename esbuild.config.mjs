@@ -26,10 +26,10 @@ const SHARED = {
 };
 
 /**
- * Build targets this extension produces, rooted at `outDir`: one bundle and
- * one verbatim copy. Exported so a host project can build it from source
- * without a VSIX. The layout is load-bearing: the client builds the worker URL
- * from `context.extensionUri`, so `assets/` must land where it expects.
+ * Build targets this extension produces, rooted at `outDir`: two bundles and one
+ * verbatim copy. Exported so a host project can build it from source without a
+ * VSIX. The layout is load-bearing: the client builds both worker URLs from
+ * `context.extensionUri`, so these paths are a contract with `activate`.
  *
  * @param {string} outDir directory to assemble into
  * @returns {import('esbuild').BuildOptions[]}
@@ -45,9 +45,18 @@ export function getBuildTargets(outDir = here) {
 			outfile: path.join(outDir, 'client', 'dist', 'browserClientMain.js'),
 		},
 		{
-			// Copied verbatim, never bundled: the polyfill loads it with
-			// `importScripts`, and byte-identity with the pinned package is what
-			// makes the undocumented worker protocol auditable across bumps.
+			...SHARED,
+			// IIFE: this is loaded with `importScripts`, by VS Code's nested-worker
+			// polyfill, and it loads the engine the same way. See `engine-host.ts`.
+			entryPoints: [path.join(here, 'client', 'src', 'engineWorkerMain.ts')],
+			format: 'iife',
+			outfile: path.join(outDir, 'client', 'dist', 'engineWorkerMain.js'),
+		},
+		{
+			// Copied verbatim, never bundled: the engine ships as published, and
+			// byte-identity with the pinned package is what makes its undocumented
+			// worker protocol auditable across bumps. Everything we need to change
+			// about its behaviour happens in `engineWorkerMain.js` before it loads.
 			absWorkingDir: here,
 			entryPoints: [PYRIGHT_WORKER],
 			loader: { '.js': 'copy' },
