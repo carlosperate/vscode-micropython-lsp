@@ -5,7 +5,7 @@ import * as vscode from 'vscode';
 import { BrowserMessageReader, BrowserMessageWriter, createMessageConnection } from 'vscode-languageclient/browser';
 
 import { SILENT_LOGGER } from '../../client/src/log-level';
-import { SERVER_ROOT } from '../../client/src/uri-map';
+import { createUriMap, SERVER_ROOT } from '../../client/src/uri-map';
 import { type EngineUrls, startPyrightWorker } from '../../client/src/worker';
 import { BYPASS_PROBE, replacementTypeshed } from './typeshed-fixture';
 
@@ -23,6 +23,16 @@ const EXTENSION_ID = 'carlosperate.micropython-lsp';
  * file pyright is not tracking: it hangs rather than answering empty. Hover
  * answers promptly for any URI the server knows about.
  */
+
+/**
+ * The root the server actually sees, which is **not** the `SERVER_ROOT` constant.
+ * Only a virtual scheme is rebased onto it; a `file:` workspace passes straight
+ * through as itself. Hardcoding the constant made every seeded path land outside
+ * pyright's project root when this runs on desktop, where the workspace is
+ * already `file:`, and three checks failed for that reason alone. Set from the
+ * live workspace before any check runs.
+ */
+let serverRoot = SERVER_ROOT;
 
 interface Result {
 	name: string;
@@ -129,8 +139,13 @@ export async function run(): Promise<void> {
 
 	const root = vscode.workspace.workspaceFolders?.[0]?.uri;
 	assert(root, 'no workspace folder; the harness should mount test/workspace/');
-	const workspaceBase = root.toString(true).replace(/\/$/, '');
+	// `toString()`, not `toString(true)`: the client derives its own root from
+	// `folders[0].uri.toString()`, so an unencoded copy of it would send every
+	// seeded URI outside pyright's project root on any path needing escaping.
+	const workspaceBase = root.toString().replace(/\/$/, '');
+	serverRoot = createUriMap(workspaceBase).serverRoot;
 	console.log(`[gate] workspace root: ${workspaceBase}`);
+	console.log(`[gate] server root:    ${serverRoot}`);
 
 	// First, before anything is seeded: this is the state a user is actually in
 	// when they open a file in a fresh session.
@@ -148,7 +163,7 @@ export async function run(): Promise<void> {
 	// reports as its workspace folder and therefore what the mirror will use.
 	// Other schemes may also happen to work, but asserting on that mostly measures
 	// pyright's import caching rather than anything we control.
-	const base = `${SERVER_ROOT}/gate`;
+	const base = `${serverRoot}/gate`;
 
 	// Created but never given content. Stub delivery depends on this staying
 	// empty: there is no content channel after initialize.
@@ -204,7 +219,7 @@ export async function run(): Promise<void> {
  * failure, and the number is only useful against itself over time.
  */
 async function checkTypingKeepsUp(client: any): Promise<void> {
-	const uri = `${SERVER_ROOT}/gate/perf.py`;
+	const uri = `${serverRoot}/gate/perf.py`;
 	await seed(client, uri, 'import sys\n');
 
 	const latencies: number[] = [];
@@ -521,12 +536,12 @@ async function checkWorkspaceFile(client: any, root: vscode.Uri): Promise<void> 
 
 	// Real workspace content, under names the real mirror will never produce, so
 	// this measures the protocol rather than accidentally re-testing the mirror.
-	await seed(client, `${SERVER_ROOT}/gate_lib.py`, await read('helper.py'));
+	await seed(client, `${serverRoot}/gate_lib.py`, await read('helper.py'));
 
 	const probeSource = 'from gate_lib import greet\n\ncheck_seeded = greet\n';
-	await seed(client, `${SERVER_ROOT}/gate_probe.py`, probeSource);
+	await seed(client, `${serverRoot}/gate_probe.py`, probeSource);
 
-	const text = await hover(client, `${SERVER_ROOT}/gate_probe.py`, probeSource, 'greet', (t) => /name:\s*str/.test(t));
+	const text = await hover(client, `${serverRoot}/gate_probe.py`, probeSource, 'greet', (t) => /name:\s*str/.test(t));
 	record('workspace file: closed sibling module resolves',
 		Boolean(text && /name:\s*str/.test(text) && /->\s*str/.test(text)),
 		`helper.py never opened in an editor. hover: ${oneLine(text)}`);
@@ -537,7 +552,7 @@ async function checkWorkspaceFile(client: any, root: vscode.Uri): Promise<void> 
 	await vscode.window.showTextDocument(
 		await vscode.workspace.openTextDocument(vscode.Uri.joinPath(root, 'main.py'))
 	);
-	const mapped = `${SERVER_ROOT}/main.py`;
+	const mapped = `${serverRoot}/main.py`;
 	const viaEditor = await hover(client, mapped, await read('main.py'), 'platform', (t) => /platform/.test(t));
 	record('editor document arrives under the server root', Boolean(viaEditor && /platform/.test(viaEditor)),
 		`opened as ${root.scheme}:, answered as ${mapped}: ${oneLine(viaEditor)}`);
@@ -586,17 +601,15 @@ async function checkDefinition(root: vscode.Uri): Promise<void> {
  * ownership of a URI the mirror already owns, and closing it makes VS Code drop
  * the server's copy on the mirror's behalf. Both are silent when they break:
  * everything still answers, just about an empty module.
- */
-/**
- * The editor taking a mirrored file over, and the half the harness cannot show.
  *
- * Opening `helper.py` makes VS Code the owner: the mirror drops its copy and the
- * client opens the real document, and the import must resolve across that
- * handover. The other direction, re-seeding when the editor closes, is not
- * testable here. `vscode-test-web` never disposes a text document, so
- * `onDidCloseTextDocument` never fires however the editor is closed, and a check
- * written against it passes only because the file is still open. Confirmed by
- * waiting 25 s on `closeAllEditors` for an event that never came.
+ * The close direction is not observable in either harness. Neither
+ * `vscode-test-web` nor the desktop gate disposes a text document, so
+ * `onDidCloseTextDocument` never fires however the editor is closed (confirmed by
+ * waiting on the event after `closeActiveEditor`, on both), and the mirror never
+ * sees a close to react to. So the assertion is made only when the event really
+ * arrives, and skipped loudly when it does not: written unconditionally it would
+ * pass for the wrong reason, because the file is still open. If a future host does
+ * fire it, this starts checking the re-seed instead of announcing that it cannot.
  */
 async function checkEditorRoundTrip(root: vscode.Uri): Promise<void> {
 	const { uri: mainUri, greet } = await openBenchImport(root);
@@ -609,11 +622,18 @@ async function checkEditorRoundTrip(root: vscode.Uri): Promise<void> {
 	record('round trip: resolves while the file is open in an editor', resolves(whileOpen),
 		`helper.py open, hover on greet: ${oneLine(whileOpen)}`);
 
-	const closed = whenClosed(helperUri, 2_000);
+	const closed = whenClosed(helperUri, 5_000);
 	await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
-	record('NOTE: the re-seed on editor close is not observable here', true,
-		`onDidCloseTextDocument fired: ${await closed}. The harness keeps documents alive, so the mirror ` +
-		'never sees a close and this half is covered by the Phase 3 manual check instead.');
+	if (!(await closed)) {
+		record('NOTE: the re-seed on editor close is not observable here', true,
+			'onDidCloseTextDocument never fired, so the mirror never saw a close. No harness fires it, ' +
+			'web or desktop, so this half is covered by the manual check only.');
+		return;
+	}
+
+	const afterClose = await waitFor(() => editorHover(mainUri, greet), resolves);
+	record('round trip: still resolves after the editor closes it', resolves(afterClose),
+		`VS Code's didClose drops the server's copy; the mirror must re-seed. hover: ${oneLine(afterClose)}`);
 }
 
 /** Resolves when VS Code really closes `uri`, which is what the mirror reacts to. */
@@ -650,7 +670,7 @@ async function checkWatcher(client: any, root: vscode.Uri): Promise<void> {
 	}
 
 	try {
-		const text = await hover(client, `${SERVER_ROOT}/gate_created.py`, source, 'spark', (t) => /int/.test(t));
+		const text = await hover(client, `${serverRoot}/gate_created.py`, source, 'spark', (t) => /int/.test(t));
 		record('watcher: a file created after the seed is mirrored', Boolean(text && /int/.test(text)),
 			`created gate_created.py, hover on spark: ${oneLine(text)}`);
 	} finally {
@@ -679,8 +699,8 @@ async function checkOpenFileIsImportable(client: any, root: vscode.Uri): Promise
 		await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(created));
 
 		const probe = 'from gate_open import spark\n\ncheck_open = spark\n';
-		await seed(client, `${SERVER_ROOT}/gate_probe_open.py`, probe);
-		const text = await hover(client, `${SERVER_ROOT}/gate_probe_open.py`, probe, 'spark', (t) => /int/.test(t));
+		await seed(client, `${serverRoot}/gate_probe_open.py`, probe);
+		const text = await hover(client, `${serverRoot}/gate_probe_open.py`, probe, 'spark', (t) => /int/.test(t));
 		record('a file open in an editor is importable by others', Boolean(text && /int/.test(text)),
 			`gate_open.py open in an editor, hover on the imported spark: ${oneLine(text)}`);
 	} finally {
@@ -692,17 +712,17 @@ async function checkOpenFileIsImportable(client: any, root: vscode.Uri): Promise
 /**
  * Squiggles in an open file, which is as far as a pull model reaches.
  *
- * This is the check that guards `patch-worker.mjs`. Unpatched, the engine never
- * answers `textDocument/diagnostic` at all and this reports zero, which is what
- * a build that dropped the patch, or an engine bump that moved the call site,
- * would look like.
+ * This is the check that guards the port fix in `client/src/engine-host.ts`.
+ * Without it the engine never answers `textDocument/diagnostic` at all and this
+ * reports zero, which is what a build that dropped `engineWorkerMain.js`, or an
+ * engine bump that moved the call site, would look like.
  *
  * It asserts on the rule that fired, not on the message or the count: block 3's
  * `greet(42)` passes an `int` where a `str` is wanted, so `reportArgumentType`
  * is proof the engine really checked types rather than merely reporting the
  * unresolved imports further down. Rule ids are stable identifiers; the prose
- * and the severities around them are not, and Phase 5 will change the mode that
- * decides how many of the other eight problems survive.
+ * and the severities around them are not, and the type checking mode still to be
+ * set will change how many of the other eight problems survive.
  */
 async function checkOpenFileDiagnostics(root: vscode.Uri): Promise<void> {
 	const mainUri = vscode.Uri.joinPath(root, 'main.py');

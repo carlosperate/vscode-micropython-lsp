@@ -126,9 +126,12 @@ describe('vendored pyright worker', () => {
 
 			// Back to the head of the method, so this reads the real call site rather
 			// than a fixed window of minified text. Spanning past it would borrow the
-			// previous method's `start()`.
-			const method = source.slice(source.lastIndexOf('createMessageChannel)()', site), site);
-			expect(method, `${request} no longer opens its own message channel`).not.toContain('requestType:"');
+			// previous method's `start()`, and a missing anchor would slice nothing and
+			// read as "no waiter" rather than as the moved marker it is.
+			const head = source.lastIndexOf('createMessageChannel)()', site);
+			expect(head, `${request} no longer opens its own message channel`).toBeGreaterThan(-1);
+			const method = source.slice(head, site);
+			expect(method, `${request} shares a message channel with an earlier call`).not.toContain('requestType:"');
 			expect(method, `${request} no longer awaits a reply port`).toContain('getBackgroundWaiter');
 			return !method.includes('.start()');
 		});

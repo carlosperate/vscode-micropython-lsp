@@ -3,4 +3,6 @@ assets/
 client/dist/
 test/integration/dist/
 .vscode-test-web/
+.vscode-test/
+test/workspace/gate_*.py
 *.vsix

@@ -3,9 +3,12 @@
 test/**
 client/src/**
 esbuild.config.mjs
+desktop.mjs
+.vscode-test/**
 tsconfig.json
 **/*.map
 **/*.ts
 node_modules/**
 package-lock.json
 dev.md
+CLAUDE.md

@@ -9,7 +9,11 @@
 			"request": "launch",
 			"args": [
 				"--extensionDevelopmentPath=${workspaceFolder}",
-				"--extensionDevelopmentKind=web"
+				"--extensionDevelopmentKind=web",
+				// The bench, plus a .py file: activation is onLanguage:python, so
+				// opening the folder alone starts nothing.
+				"${workspaceFolder}/test/workspace",
+				"${workspaceFolder}/test/workspace/main.py"
 			],
 			"outFiles": [
 				"${workspaceFolder}/client/dist/**/*.js"

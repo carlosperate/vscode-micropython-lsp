@@ -1,9 +1,9 @@
 # MicroPython & CircuitPython IntelliSense LSP
 
-Add autocomplete, go to definition and inline docs for MicroPython and
-CircuitPython projects.
+Add autocomplete, go to definition, inline docs, and type checking for
+MicroPython and CircuitPython projects.
 
-Works on VSCode web, and compatible editors, in the browser.
+Also works on VSCode web in the browser.
 
 ## Why this extension vs a generic Python LSP
 
