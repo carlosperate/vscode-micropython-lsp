@@ -1,6 +1,6 @@
 {
 	"name": "micropython-lsp",
-	"displayName": "MicroPython & CircuitPython IntelliSense LSP",
+	"displayName": "MicroPython & CircuitPython Language Server",
 	"description": "Autocomplete, type checking and inline docs for MicroPython and CircuitPython. Work on VSCode web in the browser.",
 	"publisher": "carlosperate",
 	"version": "0.1.0",
@@ -22,6 +22,7 @@
 		"stubs": "node stubs/assemble.mjs"
 	},
 	"devDependencies": {
+		"@types/node": "^22.20.1",
 		"@types/vscode": "^1.91.0",
 		"@vscode/test-electron": "^3.1.0",
 		"@vscode/test-web": "^0.0.81",
@@ -59,7 +60,7 @@
 	"homepage": "https://github.com/carlosperate/vscode-micropython-lsp#readme",
 	"contributes": {
 		"configuration": {
-			"title": "MicroPython & CircuitPython IntelliSense LSP",
+			"title": "MicroPython & CircuitPython Language Server",
 			"properties": {
 				"micropython-lsp.enable": {
 					"type": "boolean",

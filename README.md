@@ -1,9 +1,12 @@
-# MicroPython & CircuitPython IntelliSense LSP
+# MicroPython & CircuitPython Language Server
 
-Add autocomplete, go to definition, inline docs, and type checking for
-MicroPython and CircuitPython projects.
+Add autocomplete, inline docs, go to definition, and type checking for
+Embedded Python projects using MicroPython or CircuitPython 🐍🤖.
 
-Also works on VSCode web in the browser.
+Works on both desktop and web versions of VS Code, and compatible editors.
+
+🚧 This extension is still under development, currently only micro:bit stubs
+are implemented, but more will be added soon.
 
 ## Why this extension vs a generic Python LSP
 
@@ -23,7 +26,18 @@ and [CircuitPython](https://github.com/adafruit/circuitpython) projects.
 
 ## Supported boards
 
-TBD.
+🚧 This extension is still under development and only micro:bit stubs are
+implemented.
+
+Add to your workspace settings (`.vscode/settings.json`) a target board:
+
+```json
+{
+  "micropython-lsp.target": "microbit"
+}
+```
+
+More MicroPython and CircuitPython boards will be added soon in future releases.
 
 ## What gets analysed
 
@@ -51,7 +65,7 @@ others has to be switched off with its own settings.
 To disable the most common Python extensions, add this to your project's
 `.vscode/settings.json` file:
 
-```json
+```jsonc
 {
   // Microsoft Python extension (Pylance, Jedi)
   "python.languageServer": "None",
