@@ -8,7 +8,8 @@ import { logger } from './log';
 import { type LogLevel, resolveLogLevel, traceValueFor } from './log-level';
 import { ping } from './ping';
 import { DEFAULT_RESTART_POLICY, decideRestart, RestartPolicy } from './restart-policy';
-import { serverSettings, type UserSettings } from './settings';
+import { serverSettings, SERVER_TYPESHED } from './settings';
+import { AUTO_TARGET, loadTarget, type ReadStub, type Seed, TARGET_TYPESHED_URI } from './target';
 import { createUriMap, SERVER_ROOT, type UriMap } from './uri-map';
 import { type EngineUrls, PyrightWorker, startPyrightWorker } from './worker';
 
@@ -51,6 +52,8 @@ export class AnalysisSession {
 	private traceListener: Disposable | undefined;
 	/** The root the live session was built for, to spot a change that matters. */
 	private root: string | undefined;
+	/** The `micropython-lsp.target` this session was built for, same purpose. */
+	private target: string | undefined;
 	private restarts: number[] = [];
 	private gaveUp = false;
 	private disposed = false;
@@ -61,6 +64,7 @@ export class AnalysisSession {
 	constructor(
 		private readonly urls: EngineUrls,
 		private readonly outputChannel: OutputChannel,
+		private readonly readStub: ReadStub,
 		private readonly policy: RestartPolicy = DEFAULT_RESTART_POLICY
 	) {}
 
@@ -72,6 +76,11 @@ export class AnalysisSession {
 	/** The live workers. Replaced by a restart, same as the client. */
 	get pyright(): PyrightWorker | undefined {
 		return this.workers;
+	}
+
+	/** The target this session loaded, so a caller can tell a real change from a no-op. */
+	get loadedTarget(): string | undefined {
+		return this.target;
 	}
 
 	start(): Promise<void> {
@@ -109,10 +118,16 @@ export class AnalysisSession {
 		logger.info(`starting pyright worker from ${this.urls.engine}`);
 		this.workers = startPyrightWorker(this.urls, logger);
 
+		// After the worker, so fetching the engine overlaps reading the assets, and
+		// per start, because the seed is only readable at `initialize`: a target
+		// changed mid-session is a new session, never a reconfigured server.
+		const seed = await this.loadSeed();
+
 		// Rebuilt per start, so a restart picks up a workspace root that moved.
 		this.root = this.workspaceRoot();
 		const uris = createUriMap(this.root);
-		const client = new LanguageClient(CLIENT_ID, 'MicroPython LSP', this.clientOptions(uris), this.workers.worker);
+		const options = this.clientOptions(uris, seed);
+		const client = new LanguageClient(CLIENT_ID, 'MicroPython LSP', options, this.workers.worker);
 		this.client = client;
 
 		// Before `start()`, which is where the client subscribes to the document
@@ -228,7 +243,42 @@ export class AnalysisSession {
 		return folders[0]?.uri.toString() ?? SERVER_ROOT;
 	}
 
-	private clientOptions(uris: UriMap): LanguageClientOptions {
+	/**
+	 * The stubs this session analyses against, or nothing if they could not be
+	 * read.
+	 *
+	 * Failing is loud but never fatal. The engine reads exactly one stdlib root,
+	 * so the alternative to falling back to its own is pointing it at a root with
+	 * no `builtins.pyi`, where nothing resolves at all and every hover is
+	 * `Unknown`. Wrong types beat no editor.
+	 */
+	private async loadSeed(): Promise<Seed | undefined> {
+		const id = readTarget();
+		// Cleared until the assets are actually read. A session that claims a
+		// target it failed to load can never be asked to try again: the caller's
+		// no-op guard sees the value it wants as already live, so re-selecting the
+		// same board does nothing and the user is stuck on the fallback.
+		this.target = undefined;
+		try {
+			const seed = await loadTarget(this.readStub, id);
+			if (seed.id !== id) logger.warn(`no target "${id}" in the stub catalogue; analysing as "${seed.id}"`);
+			logger.info(`target "${seed.id}" (${seed.label}): ${Object.keys(seed.files).length} stub files`);
+			// The id that was asked for, not `seed.id`. A stale setting naming a
+			// board that has left the catalogue loads `auto`, and recording `auto`
+			// here would make every later configuration change look like a switch.
+			this.target = id;
+			return seed;
+		} catch (error) {
+			logger.error(`no device stubs, falling back to the bundled CPython typeshed: ${String(error)}`);
+			return undefined;
+		}
+	}
+
+	private clientOptions(uris: UriMap, seed: Seed | undefined): LanguageClientOptions {
+		// One root or the other, never both. The engine resolves the stdlib from a
+		// single typeshed, so this value alone decides whether the user is offered
+		// their board's modules or desktop CPython's.
+		const typeshed = seed ? TARGET_TYPESHED_URI : SERVER_TYPESHED;
 		return {
 			documentSelector: [{ language: 'python' }],
 			// Mirrored, not the real channel. The trace stream needs no separate
@@ -250,18 +300,24 @@ export class AnalysisSession {
 			// engine. See `settings.ts`.
 			middleware: {
 				workspace: {
-					configuration: (params) => params.items.map((item) => serverSettings(item.section, readUserSettings())),
+					// The level is read per request so a change applies without a
+					// restart; the typeshed root is captured, because it cannot.
+					configuration: (params) =>
+						params.items.map((item) => serverSettings(item.section, { logLevel: readLogLevel(), typeshed })),
 				},
 			},
-			// The server destructures `files` unguarded, and only applies its
-			// embedded typeshed when it is an object. Device stubs go here too once
-			// they are bundled.
+			// The only channel stubs have. The server destructures `files`
+			// unguarded, applies its embedded typeshed only when it is an object,
+			// and merges without ever removing, so this is read once and a later
+			// `pyright/createFile` would write an empty file.
 			//
 			// The placeholder makes the root exist in the engine's in-memory
 			// filesystem. Without it the engine tells the user "File or directory
 			// /workspace does not exist" whenever the mirror has nothing to seed,
 			// which is any workspace whose Python files are all open in editors.
-			initializationOptions: { files: { [`${Uri.parse(uris.serverRoot).path}/.keep`]: '' } },
+			initializationOptions: {
+				files: { ...seed?.files, [`${Uri.parse(uris.serverRoot).path}/.keep`]: '' },
+			},
 		};
 	}
 
@@ -305,9 +361,15 @@ async function reportGiveUp(): Promise<void> {
 	if (choice === reload) await commands.executeCommand('workbench.action.reloadWindow');
 }
 
-/** Read per request, so a level changed mid-session applies without a restart. */
-function readUserSettings(): UserSettings {
-	return { logLevel: readLogLevel() };
+/**
+ * The configured target id, read in one place so the session and the listener
+ * that decides whether to rebuild it cannot disagree about what is selected.
+ *
+ * An unset or empty value is the default, not a missing target: `get` answers
+ * `''` for a setting a user has cleared rather than removed.
+ */
+export function readTarget(): string {
+	return workspace.getConfiguration('micropython-lsp').get<string>('target') || AUTO_TARGET;
 }
 
 /** Normalised, so the engine is sent the same level our own messages are filtered by. */

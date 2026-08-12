@@ -22,6 +22,7 @@ print(sys.platform)
 from helper import Counter, greet
 
 print(greet("micro:bit"))
+greet("micro:bit")
 
 counter = Counter(start=10)
 counter.increment()  # `.` after `counter` should offer `increment` and `value`
@@ -38,7 +39,8 @@ greet(42)
 from microbit import button_a, display
 
 display.scroll("hi")
-button_a.is_pressed()
+if button_a.is_pressed():
+    display.clear()
 
 # 5. THE BYPASS: this one is backwards on purpose.
 #    Right now `subprocess` RESOLVES, and that is the bug: the engine's bundled

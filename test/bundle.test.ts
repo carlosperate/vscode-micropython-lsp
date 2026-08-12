@@ -31,6 +31,18 @@ afterAll(async () => {
 	await rm(outDir, { recursive: true, force: true });
 });
 
+/**
+ * Output paths of the targets that emit one named file.
+ *
+ * The stub layers are a many-entry copy target addressed by `outdir`, so they
+ * have no `outfile` and are not what these assertions are about.
+ */
+function singleFileTargets(): string[] {
+	return getBuildTargets(outDir)
+		.map((target: { outfile?: string }) => target.outfile)
+		.filter((out: string | undefined): out is string => out !== undefined);
+}
+
 /** Every `BackgroundAnalysisBase` request that awaits a reply port upstream. */
 const AWAITED_REQUESTS = ['analyzeFile', 'analyzeFileAndGetDiagnostics', 'writeBaseline', 'writeTypeStub'];
 
@@ -54,22 +66,57 @@ describe('extension bundles', () => {
 	// A target that moves without the client moving with it is a 404 at runtime
 	// and green everywhere else.
 	it('keeps the client and both worker paths in agreement', () => {
-		const workers = getBuildTargets(outDir).filter(
-			(t: { outfile: string }) => !t.outfile.endsWith('browserClientMain.js')
-		);
+		const workers = singleFileTargets().filter((out) => !out.endsWith('browserClientMain.js'));
 		expect(workers).toHaveLength(2);
 		const source = client.toString('utf8');
-		for (const target of workers) {
-			expect(source).toContain(path.relative(outDir, target.outfile).split(path.sep).join('/'));
+		for (const out of workers) {
+			expect(source).toContain(path.relative(outDir, out).split(path.sep).join('/'));
 		}
 	});
 
 	it('points the manifest `browser` field at a bundle the build emits', async () => {
 		const manifest = JSON.parse(await readFile(path.join(projectRoot, 'package.json'), 'utf8'));
-		const emitted = getBuildTargets(outDir).map(
-			(t: { outfile: string }) => './' + path.relative(outDir, t.outfile).split(path.sep).join('/')
-		);
+		const emitted = singleFileTargets().map((out) => './' + path.relative(outDir, out).split(path.sep).join('/'));
 		expect(emitted).toContain(manifest.browser);
+	});
+
+	// The stub layers, which are copied rather than bundled and are addressed by
+	// directory. The client builds this path from `context.extensionUri`, so it is
+	// the same coupling the worker paths above are guarding.
+	it('assembles the stub catalogue where the client looks for it', async () => {
+		const catalogue = path.join(outDir, 'assets', 'stubs', 'catalogue.json');
+		expect((await stat(catalogue)).isFile()).toBe(true);
+		expect(client.toString('utf8')).toContain('assets/stubs');
+
+		const { targets } = JSON.parse(await readFile(catalogue, 'utf8'));
+		const ids = targets.map((t: { id: string }) => t.id);
+		// `auto` is the default the setting ships with, so a catalogue without it
+		// sends every first-time user down the no-stubs fallback.
+		expect(ids).toContain('auto');
+		expect(ids).toContain('microbit');
+
+		for (const target of targets) {
+			for (const layer of target.layers) {
+				expect((await stat(path.join(outDir, 'assets', 'stubs', ...layer.split('/')))).isFile()).toBe(true);
+			}
+		}
+	});
+
+	// The dropdown in Settings is generated from the catalogue by `assemble.mjs`,
+	// but the manifest is committed, so the two drift the moment someone edits one
+	// and does not rebuild. A stale list offers a board that resolves to nothing.
+	it('keeps the target dropdown in step with the catalogue', async () => {
+		const manifest = JSON.parse(await readFile(path.join(projectRoot, 'package.json'), 'utf8'));
+		const setting = manifest.contributes.configuration.properties['micropython-lsp.target'];
+		const { targets } = JSON.parse(
+			await readFile(path.join(outDir, 'assets', 'stubs', 'catalogue.json'), 'utf8')
+		);
+
+		expect(setting.enum).toEqual(targets.map((t: { id: string }) => t.id));
+		expect(setting.enumItemLabels).toEqual(targets.map((t: { label: string }) => t.label));
+		// The default has to be one of the options, or every new user starts on a
+		// value the dropdown says is invalid.
+		expect(setting.enum).toContain(setting.default);
 	});
 });
 

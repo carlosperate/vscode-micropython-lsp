@@ -94,6 +94,24 @@ const MOD_PROBE_SOURCE = 'def probe() -> str: ...\n';
 /** Hover predicate: the seeded module's real signature, not a mid-analysis `Unknown`. */
 const resolvesToStr = (text: string) => /->\s*str/.test(text);
 
+/**
+ * Hover predicate for "the language server is answering", used by every check
+ * whose subject is the session's liveness rather than its contents.
+ *
+ * Deliberately not `LiteralString`, which the engine's own CPython typeshed gives
+ * `sys.platform` and a device typeshed does not: asserting on it made these
+ * checks quietly depend on which typeshed was live, and they went red the day a
+ * real target shipped.
+ *
+ * A hover arriving at all is most of the signal, since nothing else in the
+ * harness registers a Python hover provider and a dead server answers nothing.
+ * The `Unknown` half is the rest: a session that restarted but resolved nothing
+ * still hovers `platform: Unknown`, so the type has to be a real one without the
+ * predicate caring which.
+ */
+const serverAnswered = (text: string | undefined) =>
+	/platform:/.test(text ?? '') && !/Unknown/.test(text ?? '');
+
 /** One file, every question. Hover targets are the last occurrence of each symbol. */
 const PROBE_SOURCE = [
 	'import sys',
@@ -200,8 +218,18 @@ export async function run(): Promise<void> {
 	await checkEngineLoadFailure(ext);
 	await checkTypeshedBypass(ext);
 
-	// Last: it replaces the client and worker that everything above holds.
+	// Last: these replace the client and worker that everything above holds.
 	await checkCrashRecovery(api, root);
+	// These two share state: the switch leaves the target on `microbit` and the
+	// stub checks move it back, asserting on the move. The `finally` is for the
+	// path where one of them throws first, since the write is Global and would
+	// otherwise outlive the run and start the next one on the wrong board.
+	try {
+		await checkTargetSwitch(api, root);
+		await checkDeviceStubs(root);
+	} finally {
+		await setTarget(undefined);
+	}
 	await checkEnableToggle(api, root);
 	summarise();
 }
@@ -461,18 +489,129 @@ async function checkCrashRecovery(api: any, root: vscode.Uri): Promise<void> {
 
 	// Hover, not completion: with the server dead VS Code still answers `sys.`
 	// with ~200 word-based suggestions, so a completion list proves nothing here.
-	// Only the language server can type `platform` as `LiteralString`.
+	// Only the language server answers a hover at all.
 	const recovered = await waitFor(
 		() => editorHover(uri, platform),
-		(text) => /LiteralString/.test(text ?? ''),
+		serverAnswered,
 		60_000
 	);
-	record('the server recovers without a window reload', /LiteralString/.test(recovered ?? ''),
+	record('the server recovers without a window reload', serverAnswered(recovered),
 		`hover on sys.platform after the crash: ${oneLine(recovered)}`);
 	const after = api.pyright;
 	record('the replacement is a new worker', after !== undefined && after !== before,
 		`before=${describeWorker(before)} after=${describeWorker(after)}`);
 }
+
+/**
+ * Changing the target rebuilds the session on a **new worker**.
+ *
+ * The engine reads its seed once, at `initialize`, into a filesystem it merges
+ * into and never removes from, and the language client re-wraps the `Worker` it
+ * was constructed with. So anything short of a new worker leaves the previous
+ * board's exclusive modules resolvable, silently. Only a real extension host can
+ * show which worker answered, and this is the check that catches a regression
+ * back to `client.restart()`.
+ */
+async function checkTargetSwitch(api: any, root: vscode.Uri): Promise<void> {
+	const before = api.pyright;
+	assert(before, 'activate() did not return the worker handle');
+
+	await setTarget('microbit');
+	const replaced = await waitFor(async () => api.pyright, (handle) => handle !== undefined && handle !== before);
+	record('switching target rebuilds on a new worker', replaced !== undefined && replaced !== before,
+		`before=${describeWorker(before)} after=${describeWorker(replaced)}`);
+
+	// The handle changing only proves a session was built. Hover proves the one
+	// that replaced it actually answers, which is the half a bad restart breaks.
+	const { uri, platform } = await openBench(root);
+	const answering = await waitFor(
+		() => editorHover(uri, platform),
+		serverAnswered,
+		60_000
+	);
+	record('the server for the new target answers', serverAnswered(answering),
+		`hover on sys.platform after the switch: ${oneLine(answering)}`);
+}
+
+/**
+ * The product's central claim, in three assertions: the selected board's modules
+ * resolve, CPython's do not, and changing the board changes both.
+ *
+ * Diagnostics rather than hover for the import lines. Hovering a module symbol
+ * reports `Module("subprocess")` whether or not the import resolved, which reads
+ * identically in both worlds; an unresolved import is a *diagnostic*, and
+ * `main.py` is open, so VS Code pulls for it.
+ *
+ * Runs after the switch check, which leaves the target on `microbit`.
+ */
+async function checkDeviceStubs(root: vscode.Uri): Promise<void> {
+	const uri = vscode.Uri.joinPath(root, 'main.py');
+	const doc = await vscode.workspace.openTextDocument(uri);
+	await vscode.window.showTextDocument(doc);
+
+	const lines = doc.getText().split('\n');
+	const lineOf = (text: string) => {
+		const line = lines.findIndex((l) => l.startsWith(text));
+		assert(line >= 0, `test/workspace/main.py no longer contains a line starting "${text}"`);
+		return line;
+	};
+	const microbitLine = lineOf('from microbit import');
+	const subprocessLine = lineOf('import subprocess');
+	const unresolvedOn = async (line: number) =>
+		vscode.languages.getDiagnostics(uri).filter((d) => d.range.start.line === line && /report(Missing|Attribute)/.test(ruleOf(d)));
+
+	// The board's own modules. Waited on, because the session restarted moments ago.
+	const microbitProblems = await waitFor(() => unresolvedOn(microbitLine), (found) => found.length === 0, 60_000);
+	record('the selected board\'s modules resolve', (microbitProblems ?? []).length === 0,
+		`from microbit import ...: ${(microbitProblems ?? []).map((d) => oneLine(d.message)).join('; ') || 'no problems'}`);
+
+	// The whole point of the bypass. A resolved `subprocess` means the engine's
+	// own CPython typeshed is live and a learner can autocomplete a desktop stdlib.
+	const cpython = await waitFor(() => unresolvedOn(subprocessLine), (found) => found.length > 0, 30_000);
+	record('CPython\'s stdlib does NOT resolve', (cpython ?? []).length > 0,
+		`import subprocess: ${(cpython ?? []).map((d) => oneLine(d.message)).join('; ') || 'resolved, so the wrong typeshed is live'}`);
+
+	// Both halves matter: `sys` going red too would mean the seed replaced
+	// everything rather than bypassing, which reads the same from `subprocess` alone.
+	const stdlib = await unresolvedOn(lineOf('import sys'));
+	record('the board\'s own stdlib still resolves', stdlib.length === 0,
+		`import sys: ${stdlib.map((d) => oneLine(d.message)).join('; ') || 'no problems'}`);
+
+	// Hover, not just the absence of a diagnostic: an import can resolve to an
+	// empty module, which is what a seed delivered through the wrong channel gives.
+	const display = await hoverAt(uri, microbitLine, doc.lineAt(microbitLine).text.indexOf('display'));
+	record('a device module carries its real types', /display/.test(display ?? '') && !/Unknown/.test(display ?? ''),
+		`hover on display: ${oneLine(display)}`);
+
+	// Nothing we ship has source behind it, so this rule would fire on every
+	// device import if the severity override were dropped.
+	const missingSource = vscode.languages
+		.getDiagnostics(uri)
+		.filter((d) => ruleOf(d) === 'reportMissingModuleSource');
+	record('stub-only modules raise no missing-source warning', missingSource.length === 0,
+		`${missingSource.length} reportMissingModuleSource diagnostic(s) in main.py`);
+
+	// Switching away must take the board's modules with it. This is the assertion
+	// the new-worker rule exists for: the engine merges seeds and never removes,
+	// so a reconfigured session would still resolve `microbit` here.
+	await setTarget(undefined);
+	const gone = await waitFor(() => unresolvedOn(microbitLine), (found) => found.length > 0, 60_000);
+	record('switching away drops the previous board\'s modules', (gone ?? []).length > 0,
+		`after switching to the default target, from microbit import ...: ` +
+		`${(gone ?? []).map((d) => oneLine(d.message)).join('; ') || 'still resolving, so the seed leaked across the switch'}`);
+
+	const stillStdlib = await unresolvedOn(lineOf('import sys'));
+	record('the default target keeps a working stdlib', stillStdlib.length === 0,
+		`import sys on the default target: ${stillStdlib.map((d) => oneLine(d.message)).join('; ') || 'no problems'}`);
+}
+
+/** Global, not Workspace: the web harness mounts the workspace read-only. */
+const setTarget = (id: string | undefined) =>
+	vscode.workspace.getConfiguration('micropython-lsp').update('target', id, vscode.ConfigurationTarget.Global);
+
+/** Hover at a position given as line and character, flattened to text. */
+const hoverAt = (uri: vscode.Uri, line: number, character: number) =>
+	editorHover(uri, new vscode.Position(line, character));
 
 /**
  * `micropython-lsp.enable`, both ways.
@@ -497,10 +636,10 @@ async function checkEnableToggle(api: any, root: vscode.Uri): Promise<void> {
 	// failure this is here to catch.
 	const restarted = await waitFor(
 		() => editorHover(uri, platform),
-		(text) => /LiteralString/.test(text ?? ''),
+		serverAnswered,
 		60_000
 	);
-	record('re-enabling starts a working server', /LiteralString/.test(restarted ?? ''),
+	record('re-enabling starts a working server', serverAnswered(restarted),
 		`micropython-lsp.enable=true, hover on sys.platform: ${oneLine(restarted)}`);
 
 	// `update()` resolves once the value is written, not once our listener has
@@ -512,10 +651,10 @@ async function checkEnableToggle(api: any, root: vscode.Uri): Promise<void> {
 	await config.update('enable', true, vscode.ConfigurationTarget.Global);
 	const settled = await waitFor(
 		() => editorHover(uri, platform),
-		(text) => /LiteralString/.test(text ?? ''),
+		serverAnswered,
 		60_000
 	);
-	record('a rapid off/on settles on', /LiteralString/.test(settled ?? ''),
+	record('a rapid off/on settles on', serverAnswered(settled),
 		`toggled without waiting between, hover on sys.platform: ${oneLine(settled)}`);
 }
 

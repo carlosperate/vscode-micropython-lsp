@@ -4,6 +4,8 @@ test/**
 client/src/**
 esbuild.config.mjs
 desktop.mjs
+stubs/**
+.cache/**
 .vscode-test/**
 tsconfig.json
 **/*.map

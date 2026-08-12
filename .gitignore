@@ -1,5 +1,6 @@
 node_modules/
 assets/
+.cache/
 client/dist/
 test/integration/dist/
 .vscode-test-web/

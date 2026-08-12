@@ -36,12 +36,23 @@
  * (*) the two we answer.
  */
 
-/** The typeshed root seeded into the engine's filesystem, not a path on disk. */
+/**
+ * The engine's own embedded typeshed, and where a session lands when no target
+ * could be loaded. A path inside its in-memory filesystem, not one on disk.
+ *
+ * This root is CPython's, so `subprocess` resolves against it and the extension
+ * is answering for a machine rather than for a board. It is still the right
+ * fallback: point the engine at a root with no `builtins.pyi` in it and nothing
+ * resolves at all, so a missing seed would take the whole editor down with it.
+ * A target seeds its own stubs at `TARGET_TYPESHED` instead.
+ */
 export const SERVER_TYPESHED = 'file:///typeshed';
 
-/** The `micropython-lsp.*` settings that reach the engine. */
+/** What the engine is told, derived from the `micropython-lsp.*` settings. */
 export interface UserSettings {
 	readonly logLevel: string;
+	/** From `micropython-lsp.target`, so it is fixed for a session: a change restarts. */
+	readonly typeshed: string;
 }
 
 /**
@@ -52,7 +63,14 @@ export interface UserSettings {
  */
 export function serverSettings(section: string | null | undefined, user: UserSettings): Record<string, unknown> {
 	if (section === 'basedpyright.analysis') {
-		return { typeshedPaths: [SERVER_TYPESHED], logLevel: user.logLevel };
+		return {
+			typeshedPaths: [user.typeshed],
+			logLevel: user.logLevel,
+			// Everything a target ships is a stub with no source behind it, which
+			// is exactly what this rule complains about. Leaving it on puts a
+			// warning under every device import a user writes.
+			diagnosticSeverityOverrides: { reportMissingModuleSource: 'none' },
+		};
 	}
 	return {};
 }

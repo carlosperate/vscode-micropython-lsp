@@ -1,0 +1,18 @@
+{
+	"sources": {
+		"microbit": {
+			"description": "BBC micro:bit MicroPython typeshed, English locale. Self-contained: its own VERSIONS, builtins and machine, so it borrows no base from another flavour.",
+			"url": "https://codeload.github.com/microbit-foundation/micropython-microbit-stubs/tar.gz/refs/tags/v0.4.0",
+			"version": "v0.4.0",
+			"format": "tar.gz",
+			"license": "Apache-2.0 for the typeshed-derived files, MIT for the rest. LICENSE.md is fetched with the stubs and lists which is which, per file.",
+			"strip": 1,
+			"include": [
+				"lang/en/typeshed/",
+				"LICENSE.md"
+			],
+			"sha256": "590f02313bf6a6f8f4f640d59b310fd0b7eaad6a355a12f70ced7d27246de016",
+			"typeshed": "lang/en/typeshed/"
+		}
+	}
+}

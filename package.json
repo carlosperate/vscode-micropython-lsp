@@ -10,14 +10,16 @@
 	},
 	"scripts": {
 		"typecheck": "tsc --noEmit",
-		"build": "node esbuild.config.mjs",
+		"stubs:fetch": "node stubs/fetch.mjs",
+		"build": "npm run stubs && node esbuild.config.mjs",
 		"build:integration": "esbuild test/integration/index.ts --bundle --outfile=test/integration/dist/index.js --format=cjs --platform=browser --external:vscode --log-level=warning",
 		"test:integration": "npm run build && npm run build:integration && vscode-test-web --headless --extensionDevelopmentPath=. --extensionTestsPath=./test/integration/dist/index.js ./test/workspace",
 		"test:integration:desktop": "npm run build && npm run build:integration && node desktop.mjs --gate",
 		"test:watch": "vitest",
 		"test": "vitest run",
 		"chrome": "npm run build && vscode-test-web --browser=chromium --extensionDevelopmentPath=. ./test/workspace",
-		"desktop": "npm run build && node desktop.mjs"
+		"desktop": "npm run build && node desktop.mjs",
+		"stubs": "node stubs/assemble.mjs"
 	},
 	"devDependencies": {
 		"@types/vscode": "^1.91.0",
@@ -64,6 +66,24 @@
 					"default": true,
 					"scope": "window",
 					"description": "Enable or disable the MicroPython/CircuitPython language server. Turn this off for a project where you would rather use a general Python language server."
+				},
+				"micropython-lsp.target": {
+					"type": "string",
+					"default": "auto",
+					"scope": "window",
+					"description": "The board to analyse against. Only that board's firmware modules resolve, which is why a desktop-Python module such as 'subprocess' correctly stops resolving once a board is chosen. The default, 'auto', is the standard library alone: no board modules resolve until you pick one.",
+					"enum": [
+						"auto",
+						"microbit"
+					],
+					"enumItemLabels": [
+						"MicroPython (no board selected)",
+						"BBC micro:bit"
+					],
+					"enumDescriptions": [
+						"auto",
+						"microbit"
+					]
 				},
 				"micropython-lsp.logLevel": {
 					"type": "string",

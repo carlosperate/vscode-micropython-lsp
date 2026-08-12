@@ -1,8 +1,15 @@
 import esbuild from 'esbuild';
+import { existsSync, readdirSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+
+/** Generated device stubs. Built by `stubs/assemble.mjs`, not by esbuild. */
+const STUBS = path.join(here, 'assets', 'stubs');
+
+/** What a stub asset can be, and the only extensions the copy target will take. */
+const STUB_LOADERS = { '.json': 'copy', '.md': 'copy' };
 
 /** Prebuilt pyright worker, vendored from the pinned `browser-basedpyright`. */
 export const PYRIGHT_WORKER = path.join(
@@ -35,6 +42,12 @@ const SHARED = {
  * @returns {import('esbuild').BuildOptions[]}
  */
 export function getBuildTargets(outDir = here) {
+	// Checked on every build, copied only when the output is somewhere else:
+	// `stubs/assemble.mjs` writes these into `assets/stubs/` in place, and esbuild
+	// refuses to overwrite a file it was given as input.
+	const stubs = stubFiles();
+	const copyStubs = path.resolve(outDir) !== here;
+
 	return [
 		{
 			...SHARED,
@@ -63,7 +76,49 @@ export function getBuildTargets(outDir = here) {
 			outfile: path.join(outDir, 'assets', 'pyright.worker.js'),
 			logLevel: 'warning',
 		},
+		...(copyStubs
+			? [
+					{
+						// The generated stub layers, copied rather than bundled. One target
+						// with many entry points, not one target each: the catalogue reaches
+						// 646 board files and esbuild would otherwise run once per board.
+						absWorkingDir: here,
+						entryPoints: stubs,
+						loader: STUB_LOADERS,
+						outdir: path.join(outDir, 'assets', 'stubs'),
+						outbase: STUBS,
+						logLevel: 'warning',
+					},
+			  ]
+			: []),
 	];
+}
+
+/**
+ * Every generated stub asset, as absolute paths.
+ *
+ * Missing means the build was never run, and the failure it causes is silent and
+ * late: the extension reads a catalogue that is not there, falls back to the
+ * engine's CPython typeshed, and offers a learner `subprocess`. So this refuses
+ * to build rather than shipping an extension with no device types in it.
+ */
+function stubFiles() {
+	if (!existsSync(STUBS)) {
+		throw new Error('assets/stubs/ is missing. Run `npm run stubs` in micropython-lsp/ first.');
+	}
+	const walk = (dir) =>
+		readdirSync(dir, { withFileTypes: true }).flatMap((entry) =>
+			entry.isDirectory() ? walk(path.join(dir, entry.name)) : [path.join(dir, entry.name)]
+		);
+
+	// Filtered, not passed whole: esbuild fails a build outright on an entry point
+	// whose extension has no loader, so one `.DS_Store` from a Finder visit would
+	// otherwise break every out-of-tree build.
+	const files = walk(STUBS).filter((file) => STUB_LOADERS[path.extname(file)]);
+	if (files.length === 0) {
+		throw new Error('assets/stubs/ holds no stub assets. Run `npm run stubs` in micropython-lsp/ first.');
+	}
+	return files;
 }
 
 /** Build every bundle into `outDir`. */
@@ -71,7 +126,9 @@ export async function build(outDir = here) {
 	await Promise.all(getBuildTargets(outDir).map((options) => esbuild.build(options)));
 }
 
-const isMain = import.meta.url === `file://${process.argv[1]}`;
+// `pathToFileURL`, not a template string: only it produces the percent-encoding
+// and the `file:///C:/` shape `import.meta.url` carries on Windows.
+const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMain) {
 	build().catch((e) => {
 		console.error(e);
