@@ -5,20 +5,22 @@
 	"publisher": "carlosperate",
 	"version": "0.1.0",
 	"license": "MIT",
+	"icon": "assets/icon.png",
 	"engines": {
 		"vscode": "^1.91.0"
 	},
 	"scripts": {
 		"typecheck": "tsc --noEmit",
 		"stubs:fetch": "node stubs/fetch.mjs",
-		"build": "npm run stubs && node esbuild.config.mjs",
+		"build": "npm run stubs && node config/esbuild.config.mjs",
+		"build:icon": "node config/build-icon.mjs",
 		"build:integration": "esbuild test/integration/index.ts --bundle --outfile=test/integration/dist/index.js --format=cjs --platform=browser --external:vscode --log-level=warning",
 		"test:integration": "npm run build && npm run build:integration && vscode-test-web --headless --extensionDevelopmentPath=. --extensionTestsPath=./test/integration/dist/index.js ./test/workspace",
-		"test:integration:desktop": "npm run build && npm run build:integration && node desktop.mjs --gate",
-		"test:watch": "vitest",
-		"test": "vitest run",
+		"test:integration:desktop": "npm run build && npm run build:integration && node config/desktop.mjs --gate",
+		"test:watch": "vitest --config config/vitest.config.ts",
+		"test": "vitest run --config config/vitest.config.ts",
 		"chrome": "npm run build && vscode-test-web --browser=chromium --extensionDevelopmentPath=. ./test/workspace",
-		"desktop": "npm run build && node desktop.mjs",
+		"desktop": "npm run build && node config/desktop.mjs",
 		"stubs": "node stubs/assemble.mjs"
 	},
 	"devDependencies": {

@@ -1,10 +1,3 @@
-import { downloadAndUnzipVSCode, runTests } from '@vscode/test-electron';
-import { spawn } from 'node:child_process';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-
 /**
  * Desktop VS Code with this extension loaded from source. Two modes:
  *
@@ -24,9 +17,19 @@ import { fileURLToPath } from 'node:url';
  * expect. `.vscode/launch.json` does pass it, because `debugWebWorkerHost` needs
  * the host named to attach to it.
  */
+import { downloadAndUnzipVSCode, runTests } from '@vscode/test-electron';
+import { spawn } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
+// This script lives in config/, but every path below (the bench, .vscode-test/,
+// extensionDevelopmentPath) is repo-root-relative: that's where package.json,
+// client/dist and test/ actually are, so `root` steps back up out of config/.
 const here = path.dirname(fileURLToPath(import.meta.url));
-const bench = path.join(here, 'test', 'workspace');
+const root = path.join(here, '..');
+const bench = path.join(root, 'test', 'workspace');
 const gate = process.argv.includes('--gate');
 
 /**
@@ -63,7 +66,7 @@ function seedSettings(dir) {
  */
 const userDataDir = gate
 	? fs.mkdtempSync(path.join(os.tmpdir(), 'mplsp-gate-'))
-	: path.join(here, '.vscode-test', 'user-data');
+	: path.join(root, '.vscode-test', 'user-data');
 
 seedSettings(userDataDir);
 
@@ -71,7 +74,7 @@ seedSettings(userDataDir);
 // installed during an interactive session must not turn up in a gate run.
 const extensionsDir = gate
 	? path.join(userDataDir, 'extensions')
-	: path.join(here, '.vscode-test', 'extensions');
+	: path.join(root, '.vscode-test', 'extensions');
 
 const launchArgs = [
 	`--user-data-dir=${userDataDir}`,
@@ -89,8 +92,8 @@ if (gate) {
 	// `Worker` and `importScripts` and no `process`. So one bundle serves both hosts.
 	try {
 		await runTests({
-			extensionDevelopmentPath: here,
-			extensionTestsPath: path.join(here, 'test', 'integration', 'dist', 'index.js'),
+			extensionDevelopmentPath: root,
+			extensionTestsPath: path.join(root, 'test', 'integration', 'dist', 'index.js'),
 			launchArgs,
 		});
 	} catch (error) {
@@ -106,7 +109,7 @@ if (gate) {
 	const args = [
 		// Absolute: VS Code resolves a relative path here against its own cwd, not
 		// the shell's, and then quietly opens a window with no extension in it.
-		`--extensionDevelopmentPath=${here}`,
+		`--extensionDevelopmentPath=${root}`,
 		...launchArgs,
 		// Activation is onLanguage:python, so the folder on its own starts nothing.
 		path.join(bench, 'main.py'),

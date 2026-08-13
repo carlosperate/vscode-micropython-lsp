@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // @ts-expect-error -- plain .mjs config, no types
-import { build, getBuildTargets, PYRIGHT_WORKER } from '../esbuild.config.mjs';
+import { build, getBuildTargets, PYRIGHT_WORKER } from '../config/esbuild.config.mjs';
 import { LOAD_ENGINE } from '../client/src/engine-host';
 
 const here = path.dirname(fileURLToPath(import.meta.url));

@@ -3,17 +3,20 @@ import { existsSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+// This script lives in config/, but every path below (node_modules, client/src,
+// assets/) is repo-root-relative, so `root` steps back up out of config/.
 const here = path.dirname(fileURLToPath(import.meta.url));
+const root = path.join(here, '..');
 
 /** Generated device stubs. Built by `stubs/assemble.mjs`, not by esbuild. */
-const STUBS = path.join(here, 'assets', 'stubs');
+const STUBS = path.join(root, 'assets', 'stubs');
 
 /** What a stub asset can be, and the only extensions the copy target will take. */
 const STUB_LOADERS = { '.json': 'copy', '.md': 'copy' };
 
 /** Prebuilt pyright worker, vendored from the pinned `browser-basedpyright`. */
 export const PYRIGHT_WORKER = path.join(
-	here,
+	root,
 	'node_modules',
 	'browser-basedpyright',
 	'dist',
@@ -28,8 +31,8 @@ const SHARED = {
 	external: ['vscode'],
 	sourcemap: true,
 	logLevel: 'warning',
-	// Resolve from here, not the host project's cwd.
-	absWorkingDir: here,
+	// Resolve from the project root, not the host project's cwd.
+	absWorkingDir: root,
 };
 
 /**
@@ -41,18 +44,18 @@ const SHARED = {
  * @param {string} outDir directory to assemble into
  * @returns {import('esbuild').BuildOptions[]}
  */
-export function getBuildTargets(outDir = here) {
+export function getBuildTargets(outDir = root) {
 	// Checked on every build, copied only when the output is somewhere else:
 	// `stubs/assemble.mjs` writes these into `assets/stubs/` in place, and esbuild
 	// refuses to overwrite a file it was given as input.
 	const stubs = stubFiles();
-	const copyStubs = path.resolve(outDir) !== here;
+	const copyStubs = path.resolve(outDir) !== root;
 
 	return [
 		{
 			...SHARED,
 			// CJS: the extension host `require()`s this.
-			entryPoints: [path.join(here, 'client', 'src', 'browserClientMain.ts')],
+			entryPoints: [path.join(root, 'client', 'src', 'browserClientMain.ts')],
 			format: 'cjs',
 			alias: { path: 'path-browserify' },
 			outfile: path.join(outDir, 'client', 'dist', 'browserClientMain.js'),
@@ -61,7 +64,7 @@ export function getBuildTargets(outDir = here) {
 			...SHARED,
 			// IIFE: this is loaded with `importScripts`, by VS Code's nested-worker
 			// polyfill, and it loads the engine the same way. See `engine-host.ts`.
-			entryPoints: [path.join(here, 'client', 'src', 'engineWorkerMain.ts')],
+			entryPoints: [path.join(root, 'client', 'src', 'engineWorkerMain.ts')],
 			format: 'iife',
 			outfile: path.join(outDir, 'client', 'dist', 'engineWorkerMain.js'),
 		},
@@ -70,7 +73,7 @@ export function getBuildTargets(outDir = here) {
 			// byte-identity with the pinned package is what makes its undocumented
 			// worker protocol auditable across bumps. Everything we need to change
 			// about its behaviour happens in `engineWorkerMain.js` before it loads.
-			absWorkingDir: here,
+			absWorkingDir: root,
 			entryPoints: [PYRIGHT_WORKER],
 			loader: { '.js': 'copy' },
 			outfile: path.join(outDir, 'assets', 'pyright.worker.js'),
@@ -82,7 +85,7 @@ export function getBuildTargets(outDir = here) {
 						// The generated stub layers, copied rather than bundled. One target
 						// with many entry points, not one target each: the catalogue reaches
 						// 646 board files and esbuild would otherwise run once per board.
-						absWorkingDir: here,
+						absWorkingDir: root,
 						entryPoints: stubs,
 						loader: STUB_LOADERS,
 						outdir: path.join(outDir, 'assets', 'stubs'),
@@ -122,7 +125,7 @@ function stubFiles() {
 }
 
 /** Build every bundle into `outDir`. */
-export async function build(outDir = here) {
+export async function build(outDir = root) {
 	await Promise.all(getBuildTargets(outDir).map((options) => esbuild.build(options)));
 }
 
