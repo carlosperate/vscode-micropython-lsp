@@ -53,3 +53,23 @@ if button_a.is_pressed():
 #    stdlib stubs include it, so it is supposed to resolve. `subprocess` is
 #    absent from MicroPython, CircuitPython and micro:bit alike.
 import subprocess
+
+# 6. BOARD MODULES: at most one of these three ever resolves at a time.
+#    `machine` ships with every MicroPython board and with the micro:bit, while
+#    `esp32` and `rp2` each belong to one chip family. Pick an ESP32 target and
+#    only `esp32` resolves; pick a Pico and only `rp2` does. On the default
+#    target none of them do, which is the point: a user who has not said what
+#    they are programming is not offered hardware modules.
+import esp32
+import machine
+import rp2
+
+# 7. THE SHARED BASE: needs a MicroPython target, any of them.
+#    MicroPython's standard library keeps its helper types in a package that
+#    ships outside the typeshed root, so the build has to move it in. Hover
+#    `print_exception` and expect `file: IOBase_mp` in the signature. Left where
+#    upstream puts it, `sys` still imports and every type coming through that
+#    package is silently `Unknown`, which is what this line is here to catch.
+#    (On the micro:bit target the same call resolves to a narrower signature of
+#    its own, with no `file` parameter, and that is correct.)
+sys.print_exception(ValueError("nothing is wrong"))

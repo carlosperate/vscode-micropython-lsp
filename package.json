@@ -12,6 +12,7 @@
 	"scripts": {
 		"typecheck": "tsc --noEmit",
 		"stubs:fetch": "node stubs/fetch.mjs",
+		"check:micropythonpackages": "node stubs/check.mjs",
 		"build": "npm run stubs && node config/esbuild.config.mjs",
 		"build:icon": "node config/build-icon.mjs",
 		"build:integration": "esbuild test/integration/index.ts --bundle --outfile=test/integration/dist/index.js --format=cjs --platform=browser --external:vscode --log-level=warning",
@@ -30,6 +31,7 @@
 		"@vscode/test-web": "^0.0.81",
 		"browser-basedpyright": "1.39.9",
 		"esbuild": "^0.21.0",
+		"fflate": "0.8.3",
 		"path-browserify": "^1.0.1",
 		"typescript": "^5.4.0",
 		"vitest": "^1.6.0",
@@ -68,7 +70,8 @@
 					"type": "boolean",
 					"default": true,
 					"scope": "window",
-					"description": "Enable or disable the MicroPython/CircuitPython language server. Turn this off for a project where you would rather use a general Python language server."
+					"description": "Enable or disable the MicroPython/CircuitPython language server. Turn this off for a project where you would rather use a general Python language server.",
+					"order": 1
 				},
 				"micropython-lsp.target": {
 					"type": "string",
@@ -77,16 +80,80 @@
 					"description": "The board to analyse against. Only that board's firmware modules resolve, which is why a desktop-Python module such as 'subprocess' correctly stops resolving once a board is chosen. The default, 'auto', is the standard library alone: no board modules resolve until you pick one.",
 					"enum": [
 						"auto",
-						"microbit"
+						"microbit",
+						"micropython/rp2/arduino_nano_rp2040_connect",
+						"micropython/esp32/esp32_generic",
+						"micropython/esp32/esp32_generic_c3",
+						"micropython/esp32/esp32_generic_c5",
+						"micropython/esp32/esp32_generic_c6",
+						"micropython/esp32/esp32_generic_s2",
+						"micropython/esp32/esp32_generic_s3",
+						"micropython/esp8266/esp8266_generic",
+						"micropython/stm32/pybv11",
+						"micropython/rp2",
+						"micropython/rp2/rpi_pico",
+						"micropython/rp2/rpi_pico2",
+						"micropython/rp2/rpi_pico2_w",
+						"micropython/rp2/rpi_pico_w",
+						"micropython/samd",
+						"micropython/stm32",
+						"micropython/samd/seeed_wio_terminal",
+						"micropython/unix",
+						"micropython/rp2/waveshare_rp2040_zero",
+						"micropython/webassembly",
+						"micropython/windows"
 					],
 					"enumItemLabels": [
 						"MicroPython (no board selected)",
-						"BBC micro:bit"
+						"BBC micro:bit",
+						"MicroPython: Arduino Nano RP2040 Connect",
+						"MicroPython: ESP32",
+						"MicroPython: ESP32-C3",
+						"MicroPython: ESP32-C5",
+						"MicroPython: ESP32-C6",
+						"MicroPython: ESP32-S2",
+						"MicroPython: ESP32-S3",
+						"MicroPython: ESP8266",
+						"MicroPython: PyBoard v1.1",
+						"MicroPython: RP2040 / RP2350 (generic)",
+						"MicroPython: Raspberry Pi Pico",
+						"MicroPython: Raspberry Pi Pico 2",
+						"MicroPython: Raspberry Pi Pico 2 W",
+						"MicroPython: Raspberry Pi Pico W",
+						"MicroPython: SAMD21 / SAMD51 (generic)",
+						"MicroPython: STM32 (generic)",
+						"MicroPython: Seeed Wio Terminal",
+						"MicroPython: Unix port",
+						"MicroPython: Waveshare RP2040-Zero",
+						"MicroPython: WebAssembly port",
+						"MicroPython: Windows port"
 					],
 					"enumDescriptions": [
 						"auto",
-						"microbit"
-					]
+						"microbit (micro:bit MicroPython, stubs v0.4.0)",
+						"micropython/rp2/arduino_nano_rp2040_connect (MicroPython 1.28)",
+						"micropython/esp32/esp32_generic (MicroPython 1.28)",
+						"micropython/esp32/esp32_generic_c3 (MicroPython 1.28)",
+						"micropython/esp32/esp32_generic_c5 (MicroPython 1.28)",
+						"micropython/esp32/esp32_generic_c6 (MicroPython 1.28)",
+						"micropython/esp32/esp32_generic_s2 (MicroPython 1.28)",
+						"micropython/esp32/esp32_generic_s3 (MicroPython 1.28)",
+						"micropython/esp8266/esp8266_generic (MicroPython 1.28)",
+						"micropython/stm32/pybv11 (MicroPython 1.28)",
+						"micropython/rp2 (MicroPython 1.28)",
+						"micropython/rp2/rpi_pico (MicroPython 1.28)",
+						"micropython/rp2/rpi_pico2 (MicroPython 1.28)",
+						"micropython/rp2/rpi_pico2_w (MicroPython 1.28)",
+						"micropython/rp2/rpi_pico_w (MicroPython 1.28)",
+						"micropython/samd (MicroPython 1.28)",
+						"micropython/stm32 (MicroPython 1.28)",
+						"micropython/samd/seeed_wio_terminal (MicroPython 1.28)",
+						"micropython/unix (MicroPython 1.28)",
+						"micropython/rp2/waveshare_rp2040_zero (MicroPython 1.28)",
+						"micropython/webassembly (MicroPython 1.28)",
+						"micropython/windows (MicroPython 1.28)"
+					],
+					"order": 2
 				},
 				"micropython-lsp.logLevel": {
 					"type": "string",
@@ -98,13 +165,15 @@
 					],
 					"default": "information",
 					"scope": "window",
-					"description": "How much this extension and the language server it bundles write to the 'MicroPython LSP' output channel. 'trace' adds worker startup, LSP message traffic, and the server's most detailed analysis logging."
+					"description": "How much this extension and the language server it bundles write to the 'MicroPython LSP' output channel. 'trace' adds worker startup, LSP message traffic, and the server's most detailed analysis logging.",
+					"order": 3
 				},
 				"micropython-lsp.mirrorLogsToConsole": {
 					"type": "boolean",
 					"default": false,
 					"scope": "window",
-					"description": "Developer/debugging setting. Also print the 'MicroPython LSP' output channel to the developer console. Logging level defined by micropython-lsp.logLevel."
+					"description": "Developer/debugging setting. Also print the 'MicroPython LSP' output channel to the developer console. Logging level defined by micropython-lsp.logLevel.",
+					"order": 4
 				}
 			}
 		}

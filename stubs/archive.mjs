@@ -1,19 +1,22 @@
 /**
- * Turning a downloaded `.tar.gz` into a verified tree of files, in memory.
+ * Turning a downloaded archive into a tree of files, in memory.
  *
- * Hand-rolled rather than shelled out or taken from a package: `tar` is not a
- * command every developer's platform spells the same way, and the format we
- * actually meet is the narrow one GitHub and PyPI emit. Everything here is pure
+ * Nothing shells out: `tar` and `unzip` are not commands every developer's
+ * platform spells the same way. Zip comes from `fflate`, which is small and has
+ * no dependencies of its own; tar is ours, because the format we meet is the
+ * narrow one GitHub emits and it is about forty lines. Everything here is pure
  * over buffers, so the whole acquisition path is unit-testable without a
  * network or a temporary directory.
  *
- * Corruption is already caught upstream of this file: `gunzipSync` validates
- * gzip's own CRC32 and throws, which is why the per-header tar checksum is read
- * past rather than verified.
+ * Neither reader verifies content, and neither needs to. `fetch.mjs` checks the
+ * sha256 of the archive as served, before and after every download, so a
+ * corrupt or substituted file never reaches these functions.
  */
 
 import { createHash } from 'node:crypto';
 import { gunzipSync } from 'node:zlib';
+
+import { unzipSync } from 'fflate';
 
 const BLOCK = 512;
 
@@ -26,8 +29,7 @@ const FILE_TYPES = new Set(['0', '\0']);
  * Dispatching on a declared format rather than sniffing the URL, because a
  * source's URL need not end in its extension: GitHub's is
  * `.../tar.gz/refs/tags/v0.4.0`. An unknown format throws rather than being
- * guessed at, so adding zip for the MicroPython wheels is a change here and
- * nowhere else.
+ * guessed at, so a source we cannot read fails by name.
  *
  * @param {Buffer} buffer
  * @param {string} format
@@ -35,6 +37,7 @@ const FILE_TYPES = new Set(['0', '\0']);
  */
 export function extractArchive(buffer, format) {
 	if (format === 'tar.gz') return extractTarGz(buffer);
+	if (format === 'zip') return extractZip(buffer);
 	throw new Error(`unsupported archive format "${format}"`);
 }
 
@@ -88,6 +91,25 @@ export function extractTar(tar) {
 		offset += Math.ceil(size / BLOCK) * BLOCK;
 	}
 
+	return files;
+}
+
+/**
+ * Every regular file in a zip, keyed on its full path.
+ *
+ * `fflate` returns directory entries too, as empty content under a name ending
+ * in a slash, and the wheels we read happen not to record any. Dropped anyway,
+ * because one would otherwise become a file with an empty name inside a layer:
+ * the same rule the tar reader applies, and the reason this is not a one-liner.
+ *
+ * @param {Buffer} zip
+ * @returns {Map<string, Buffer>}
+ */
+export function extractZip(zip) {
+	const files = new Map();
+	for (const [path, bytes] of Object.entries(unzipSync(zip))) {
+		if (!path.endsWith('/')) files.set(path, Buffer.from(bytes));
+	}
 	return files;
 }
 

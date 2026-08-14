@@ -42,25 +42,187 @@ const MICROBIT_DEVICE = [
 	'this',
 ];
 
+/** The default target, which is first in the dropdown rather than sorted into it. */
+const AUTO_TARGET = 'auto';
+
+/** The config key of the standard library every MicroPython board layers onto. */
+export const MICROPYTHON_BASE = 'micropython-stdlib';
+
+/** Where that base is written, and what every MicroPython target names first. */
+const MICROPYTHON_BASE_LAYER = 'micropython/stdlib.json';
+
 /**
- * A cached source tree, narrowed to one typeshed root and turned into a layer.
+ * How the MicroPython wheels are rearranged into one typeshed root.
+ *
+ * `stdlib/` and `stubs/` are already the shape a typeshed root wants.
+ * `_mpy_shed` is not: it sits beside them at the wheel root, where the engine
+ * has no import root pointing at it, and it carries the types six of the
+ * standard library's own stubs and every board overlay import from. Left where
+ * upstream puts it, those modules still resolve and their members quietly
+ * become `Unknown`, which is the failure this phase could ship without noticing.
+ */
+const MICROPYTHON_BASE_MOVES = [
+	{ from: 'stdlib/', to: 'stdlib/' },
+	{ from: '_mpy_shed/', to: 'stdlib/_mpy_shed/' },
+	{ from: 'stubs/', to: 'stubs/' },
+];
+
+/**
+ * A cached source tree, rearranged into the layout a typeshed root wants.
+ *
+ * Each move rewrites one prefix to another; the first move a path matches wins,
+ * and a path no move names is dropped, which is how packaging metadata and
+ * licences stay out of a layer. Every move must match something, so a subtree
+ * that has moved upstream fails here rather than writing a layer with a hole in
+ * it.
  *
  * @param {Map<string, Buffer>} tree paths as they appear in the archive
- * @param {string} root the prefix holding `stdlib/`, removed from every key
+ * @param {{from: string, to: string}[]} moves prefix rewrites, in priority order
  * @returns {{files: Record<string, string>}}
  */
-export function toLayer(tree, root) {
+export function toLayer(tree, moves) {
+	const matched = new Set();
 	const files = {};
+
 	for (const [key, content] of tree) {
-		if (key.startsWith(root)) files[key.slice(root.length)] = content.toString('utf8');
+		const move = moves.find((candidate) => key.startsWith(candidate.from));
+		if (!move) continue;
+		matched.add(move.from);
+		files[`${move.to}${key.slice(move.from.length)}`] = content.toString('utf8');
 	}
 
-	const paths = Object.keys(files).sort();
-	if (paths.length === 0) throw new Error(`no files under "${root}" to build a layer from`);
+	const missing = moves.filter((move) => !matched.has(move.from));
+	if (missing.length) {
+		throw new Error(`nothing under ${missing.map((move) => `"${move.from}"`).join(', ')} to build a layer from`);
+	}
 
 	// Sorted, because the archive's order is not something upstream promises and
 	// this output is read in diffs.
+	const paths = Object.keys(files).sort();
 	return { files: Object.fromEntries(paths.map((key) => [key, files[key]])) };
+}
+
+/**
+ * Every top-level entry of a wheel apart from its packaging metadata.
+ *
+ * A board wheel has no folder structure to preserve: it ships its stubs flat at
+ * the root, so the moves that lift them into `stdlib/` have to be derived from
+ * what is there. A directory keeps its trailing slash and a file does not,
+ * which is what makes these safe as prefixes, and `.dist-info/` is left out
+ * because its name carries the version and would otherwise have to be re-edited
+ * in the config on every bump.
+ *
+ * @param {Map<string, Buffer>} tree
+ * @returns {string[]}
+ */
+export function wheelRoots(tree) {
+	const roots = new Set();
+	for (const key of tree.keys()) {
+		const slash = key.indexOf('/');
+		roots.add(slash === -1 ? key : key.slice(0, slash + 1));
+	}
+	return [...roots].filter((root) => !root.endsWith('.dist-info/')).sort();
+}
+
+/**
+ * A board overlay must only add to the standard library it layers onto.
+ *
+ * Layers merge with the later one winning and no complaint, so an overlap is
+ * invisible at runtime. Upstream keeps the two apart, which is why we can ship
+ * them as separate layers at all, and an overlap here means that separation
+ * moved and the merge has started picking a winner nobody chose.
+ *
+ * @param {{files: Record<string, string>}} base
+ * @param {{files: Record<string, string>}} overlay
+ * @param {string} id the target the overlay belongs to, for the message
+ */
+export function assertDisjoint(base, overlay, id) {
+	const clashes = Object.keys(overlay.files).filter((path) => path in base.files);
+	if (clashes.length === 0) return;
+	throw new Error(
+		`${id} redefines ${clashes.length} file(s) the base layer already ships: ${clashes.slice(0, 5).join(', ')}`
+	);
+}
+
+/** Where a board's overlay is written, and what its catalogue entry names. */
+export function boardLayer(source) {
+	const name = source.board ? `${source.port}-${source.board}` : source.port;
+	return `micropython/boards/${name}.json`;
+}
+
+/**
+ * One MicroPython board's catalogue entry.
+ *
+ * The label leads with the flavour so the dropdown sorts into one run per
+ * language: the same board ships for CircuitPython too, and two bare "Raspberry
+ * Pi Pico W" entries would be indistinguishable. The firmware release goes in
+ * the description beside the id, taken from the pinned version rather than
+ * hand-written, because a label saying 1.28 beside a 1.29 pin is a lie nothing
+ * else would catch.
+ */
+export function micropythonTarget(source, layer = boardLayer(source)) {
+	const board = source.board ? `${source.port}/${source.board}` : source.port;
+	const id = `micropython/${board}`;
+	return {
+		id,
+		label: `MicroPython: ${source.label}`,
+		description: `${id} (MicroPython ${source.version.split('.').slice(0, 2).join('.')})`,
+		group: source.port,
+		layers: [MICROPYTHON_BASE_LAYER, layer],
+	};
+}
+
+/**
+ * A whole port's entry, sharing the layer of the one board it duplicates.
+ *
+ * Upstream publishes `micropython-<port>-stubs` byte-identical to that port's
+ * flagship board, which is why the skip list drops it. Skipping the download was
+ * right; skipping the *name* was not. The stubs a user with some other board of
+ * the port needs are already here, but they are filed under "Raspberry Pi Pico
+ * W", and someone holding an RP2040 that is not a Pico has no way to know that
+ * is the entry to pick. Pointing this at the same layer costs nothing.
+ *
+ * @param {{duplicateOf: string, label: string}} entry a `skip` entry that names a generic
+ * @param {object} source the config source it duplicates
+ */
+export function genericTarget(entry, source) {
+	return micropythonTarget({ port: source.port, label: entry.label, version: source.version }, boardLayer(source));
+}
+
+/**
+ * No two targets may answer to the same id.
+ *
+ * The ids become the `enum` of the Settings dropdown, and VS Code resolves the
+ * current value with `indexOf`: the second of two options sharing a value can
+ * never be selected, and always renders as the first. Nothing downstream would
+ * notice, since the catalogue, the merge and the seed all work either way.
+ *
+ * @param {{id: string}[]} targets
+ */
+export function assertUniqueIds(targets) {
+	const seen = new Set();
+	const clashes = new Set();
+	for (const { id } of targets) {
+		if (seen.has(id)) clashes.add(id);
+		seen.add(id);
+	}
+	if (clashes.size) throw new Error(`two catalogue targets share the id(s) ${[...clashes].join(', ')}`);
+}
+
+/**
+ * Catalogue order, which is the order the Settings dropdown shows.
+ *
+ * `auto` first because it is the default, and "no board selected" is not a name
+ * anyone looks up alphabetically. Everything else by label, so the user scans
+ * one alphabetical run of board names rather than an order that only makes
+ * sense to the build. Compared by code unit rather than `localeCompare`, since
+ * this decides the bytes of a committed manifest and ICU differs between
+ * platforms.
+ */
+export function orderTargets(targets) {
+	const rest = targets.filter((target) => target.id !== AUTO_TARGET);
+	rest.sort((a, b) => (a.label < b.label ? -1 : a.label > b.label ? 1 : 0));
+	return [...targets.filter((target) => target.id === AUTO_TARGET), ...rest];
 }
 
 /**
@@ -106,13 +268,13 @@ export function splitDevice(layer, modules) {
  * id is what a project commits to its `.vscode/settings.json` and what any later
  * programmatic route would take.
  *
- * @param {{targets: {id: string, label: string}[]}} catalogue
+ * @param {{targets: {id: string, label: string, description?: string}[]}} catalogue
  */
 export function targetEnum(catalogue) {
 	return {
 		enum: catalogue.targets.map((target) => target.id),
 		enumItemLabels: catalogue.targets.map((target) => target.label),
-		enumDescriptions: catalogue.targets.map((target) => target.id),
+		enumDescriptions: catalogue.targets.map((target) => target.description ?? target.id),
 	};
 }
 
@@ -126,13 +288,91 @@ function moduleOf(key) {
 
 export async function assembleStubs() {
 	await fetchStubs();
-	const { sources } = await readConfig();
-
-	const microbit = sources.microbit;
-	const tree = sourceTree(await readArchive('microbit', microbit), microbit);
-	const { base, device } = splitDevice(toLayer(tree, microbit.typeshed), MICROBIT_DEVICE);
+	const { sources, skip = {} } = await readConfig();
 
 	await rm(ASSETS, { recursive: true, force: true });
+	const targets = orderTargets([
+		...(await assembleMicroPython(sources, skip)),
+		...(await assembleMicrobit(sources.microbit)),
+	]);
+	assertUniqueIds(targets);
+
+	const catalogue = { targets };
+	await write('catalogue.json', catalogue);
+	await writeTargetEnum(catalogue);
+	console.log(`[stubs] assembled ${targets.length} targets into assets/stubs/`);
+}
+
+/**
+ * The MicroPython base, every board overlay, and their catalogue entries.
+ *
+ * The base goes first and carries `auto`, the default target: the standard
+ * library with no board modules at all, which is the honest answer for a user
+ * who has not said what they are programming.
+ */
+async function assembleMicroPython(sources, skip) {
+	const source = sources[MICROPYTHON_BASE];
+	const tree = await cachedTree(MICROPYTHON_BASE, source);
+	const base = toLayer(tree, MICROPYTHON_BASE_MOVES);
+	await write(MICROPYTHON_BASE_LAYER, base);
+	await writeRaw('micropython/LICENSE.md', wheelLicence(tree));
+
+	const targets = [
+		{
+			id: AUTO_TARGET,
+			label: 'MicroPython (no board selected)',
+			layers: [MICROPYTHON_BASE_LAYER],
+		},
+	];
+
+	let shared;
+	let overlays = 0;
+	for (const [id, board] of Object.entries(sources).filter(([, entry]) => entry.port)) {
+		const wheel = await cachedTree(id, board);
+		const overlay = toLayer(wheel, wheelRoots(wheel).map((root) => ({ from: root, to: `stdlib/${root}` })));
+		const target = micropythonTarget(board);
+		assertDisjoint(base, overlay, target.id);
+		await write(boardLayer(board), overlay);
+
+		const licence = wheelLicence(wheel);
+		if (shared === undefined) shared = licence;
+		else assertSameLicence(id, shared, licence);
+		targets.push(target);
+		overlays += 1;
+	}
+
+	// One copy for all of them, having just checked they say the same thing. The
+	// board wheels carry the same MIT text under the same copyright, and 17 more
+	// identical files would be noise rather than attribution.
+	await writeRaw('micropython/boards/LICENSE.md', shared);
+
+	// The skipped port packages that are worth offering under their own name. Only
+	// the ones the config gives a label to: a port whose flagship board is already
+	// called something generic ("ESP32", "ESP8266") would otherwise get a second
+	// entry meaning exactly the same thing.
+	const generics = Object.entries(skip).filter(([, entry]) => entry.label);
+	for (const [name, entry] of generics) {
+		const board = sources[entry.duplicateOf];
+		if (!board) throw new Error(`${name}: "duplicateOf": "${entry.duplicateOf}" is not a source in config.json`);
+		targets.push(genericTarget(entry, board));
+	}
+
+	console.log(
+		`[stubs] micropython: ${Object.keys(base.files).length} base files + ${overlays} board overlays` +
+			` + ${generics.length} generic port targets sharing them`
+	);
+	return targets;
+}
+
+/**
+ * micro:bit, which is a flavour of its own: a self-contained typeshed with its
+ * own `VERSIONS`, `builtins` and `machine`, borrowing nothing from MicroPython's
+ * standard library.
+ */
+async function assembleMicrobit(source) {
+	const tree = await cachedTree('microbit', source);
+	const { base, device } = splitDevice(toLayer(tree, [{ from: source.typeshed, to: '' }]), MICROBIT_DEVICE);
+
 	await write('microbit/base.json', base);
 	await write('microbit/device.json', device);
 
@@ -140,25 +380,38 @@ export async function assembleStubs() {
 	// listing of which half is Apache-2.0 and which is MIT.
 	await writeRaw('microbit/LICENSE.md', tree.get('LICENSE.md'));
 
-	const catalogue = {
-		targets: [
-			{
-				id: 'auto',
-				label: 'MicroPython (no board selected)',
-				layers: ['microbit/base.json'],
-			},
-			{
-				id: 'microbit',
-				label: 'BBC micro:bit',
-				layers: ['microbit/base.json', 'microbit/device.json'],
-			},
-		],
-	};
-	await write('catalogue.json', catalogue);
-	await writeTargetEnum(catalogue);
+	console.log(
+		`[stubs] microbit: ${Object.keys(base.files).length} base files + ${Object.keys(device.files).length} device files`
+	);
+	// Deliberately not prefixed "MicroPython:" like the boards above. That prefix
+	// means upstream MicroPython, and upstream has a micro:bit of its own
+	// (`ports/nrf/boards/MICROBIT`) with the standard APIs and no `microbit`
+	// module. These stubs are the Foundation's fork instead, so the name has to
+	// stay free for the port that would earn it.
+	return [
+		{
+			id: 'microbit',
+			label: 'BBC micro:bit',
+			description: `microbit (micro:bit MicroPython, stubs ${source.version})`,
+			layers: ['microbit/base.json', 'microbit/device.json'],
+		},
+	];
+}
 
-	const count = (layer) => Object.keys(layer.files).length;
-	console.log(`[stubs] assembled ${count(base)} base + ${count(device)} device files into assets/stubs/`);
+/** A wheel's licence, from the `.dist-info/` its version stamps. */
+function wheelLicence(tree) {
+	const path = [...tree.keys()].find((key) => key.endsWith('.dist-info/licenses/LICENSE.md'));
+	return path === undefined ? undefined : tree.get(path);
+}
+
+/** One wheel writes the boards' licence file, so the rest have to agree with it. */
+function assertSameLicence(id, licence, other) {
+	// Line endings normalised because one wheel ships CRLF: same text, same
+	// copyright, different writer.
+	const text = (buffer) => String(buffer).replace(/\r\n/g, '\n');
+	if (text(licence) !== text(other)) {
+		throw new Error(`${id} ships a different licence from the other board stubs; they can no longer share one file`);
+	}
 }
 
 /**
@@ -182,7 +435,8 @@ async function writeTargetEnum(catalogue) {
 	console.log(`[stubs] package.json: micropython-lsp.target now offers ${setting.enum.length} targets`);
 }
 
-const readArchive = (id, source) => readFile(cachedArchive(id, source));
+/** One source's files, unpacked from the archive as it was served. */
+const cachedTree = async (id, source) => sourceTree(await readFile(cachedArchive(id, source)), source);
 
 const write = (name, value) => writeRaw(name, `${JSON.stringify(value, null, '\t')}\n`);
 

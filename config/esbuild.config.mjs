@@ -1,5 +1,5 @@
 import esbuild from 'esbuild';
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -8,11 +8,20 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(here, '..');
 
-/** Generated device stubs. Built by `stubs/assemble.mjs`, not by esbuild. */
-const STUBS = path.join(root, 'assets', 'stubs');
+/** Everything the manifest points at that esbuild does not compile. */
+const ASSETS = path.join(root, 'assets');
 
-/** What a stub asset can be, and the only extensions the copy target will take. */
-const STUB_LOADERS = { '.json': 'copy', '.md': 'copy' };
+/** Generated device stubs. Built by `stubs/assemble.mjs`, not by esbuild. */
+const STUBS = path.join(ASSETS, 'stubs');
+
+/** The icon `package.json` names. Committed, unlike the rest of `assets/`. */
+const ICON = path.join(ASSETS, 'icon.png');
+
+/** What a copied asset can be, and the only extensions the copy target will take. */
+const ASSET_LOADERS = { '.json': 'copy', '.md': 'copy', '.png': 'copy' };
+
+/** Inputs the stub catalogue is generated from, so a stale one can be spotted. */
+const STUB_SOURCES = [path.join(root, 'stubs', 'config.json'), path.join(root, 'stubs', 'assemble.mjs')];
 
 /** Prebuilt pyright worker, vendored from the pinned `browser-basedpyright`. */
 export const PYRIGHT_WORKER = path.join(
@@ -48,8 +57,8 @@ export function getBuildTargets(outDir = root) {
 	// Checked on every build, copied only when the output is somewhere else:
 	// `stubs/assemble.mjs` writes these into `assets/stubs/` in place, and esbuild
 	// refuses to overwrite a file it was given as input.
-	const stubs = stubFiles();
-	const copyStubs = path.resolve(outDir) !== root;
+	const assets = assetFiles();
+	const copyAssets = path.resolve(outDir) !== root;
 
 	return [
 		{
@@ -79,17 +88,18 @@ export function getBuildTargets(outDir = root) {
 			outfile: path.join(outDir, 'assets', 'pyright.worker.js'),
 			logLevel: 'warning',
 		},
-		...(copyStubs
+		...(copyAssets
 			? [
 					{
-						// The generated stub layers, copied rather than bundled. One target
-						// with many entry points, not one target each: the catalogue reaches
-						// 646 board files and esbuild would otherwise run once per board.
+						// Everything the manifest names, copied rather than bundled. One
+						// target with many entry points, not one target each: the catalogue
+						// reaches 646 board files and esbuild would otherwise run once per
+						// board.
 						absWorkingDir: root,
-						entryPoints: stubs,
-						loader: STUB_LOADERS,
-						outdir: path.join(outDir, 'assets', 'stubs'),
-						outbase: STUBS,
+						entryPoints: assets,
+						loader: ASSET_LOADERS,
+						outdir: path.join(outDir, 'assets'),
+						outbase: ASSETS,
 						logLevel: 'warning',
 					},
 			  ]
@@ -98,16 +108,33 @@ export function getBuildTargets(outDir = root) {
 }
 
 /**
- * Every generated stub asset, as absolute paths.
+ * Every asset the manifest points at, as absolute paths: the icon, then the
+ * generated stub layers.
  *
- * Missing means the build was never run, and the failure it causes is silent and
- * late: the extension reads a catalogue that is not there, falls back to the
- * engine's CPython typeshed, and offers a learner `subprocess`. So this refuses
- * to build rather than shipping an extension with no device types in it.
+ * Called on every build, not only the ones that copy, because it is where the
+ * guards live and a missing asset is worth refusing an in-tree build over too.
+ * A missing catalogue fails silently and late otherwise: the extension reads one
+ * that is not there, falls back to the engine's CPython typeshed, and offers a
+ * learner `subprocess`. A missing icon is only a 404 in the Extensions view, but
+ * it is the same class of thing, a manifest naming a file nothing wrote.
  */
-function stubFiles() {
+function assetFiles() {
 	if (!existsSync(STUBS)) {
 		throw new Error('assets/stubs/ is missing. Run `npm run stubs` in micropython-lsp/ first.');
+	}
+	if (!existsSync(ICON)) {
+		throw new Error('assets/icon.png is missing. Run `npm run build:icon` in micropython-lsp/ first.');
+	}
+
+	// Existence is not currency. Our own `build` script runs `npm run stubs`
+	// first, but a host project builds this by importing `getBuildTargets()`
+	// directly and skips that half, so an edited catalogue would otherwise be
+	// copied from the previous run and ship a board list nobody asked for.
+	const catalogue = statSync(path.join(STUBS, 'catalogue.json')).mtimeMs;
+	const edited = STUB_SOURCES.filter((source) => statSync(source).mtimeMs > catalogue);
+	if (edited.length) {
+		const names = edited.map((source) => path.relative(root, source)).join(', ');
+		throw new Error(`assets/stubs/ is older than ${names}. Run \`npm run stubs\` in micropython-lsp/ first.`);
 	}
 	const walk = (dir) =>
 		readdirSync(dir, { withFileTypes: true }).flatMap((entry) =>
@@ -117,11 +144,11 @@ function stubFiles() {
 	// Filtered, not passed whole: esbuild fails a build outright on an entry point
 	// whose extension has no loader, so one `.DS_Store` from a Finder visit would
 	// otherwise break every out-of-tree build.
-	const files = walk(STUBS).filter((file) => STUB_LOADERS[path.extname(file)]);
-	if (files.length === 0) {
+	const stubs = walk(STUBS).filter((file) => ASSET_LOADERS[path.extname(file)]);
+	if (stubs.length === 0) {
 		throw new Error('assets/stubs/ holds no stub assets. Run `npm run stubs` in micropython-lsp/ first.');
 	}
-	return files;
+	return [ICON, ...stubs];
 }
 
 /** Build every bundle into `outDir`. */

@@ -220,13 +220,14 @@ export async function run(): Promise<void> {
 
 	// Last: these replace the client and worker that everything above holds.
 	await checkCrashRecovery(api, root);
-	// These two share state: the switch leaves the target on `microbit` and the
-	// stub checks move it back, asserting on the move. The `finally` is for the
-	// path where one of them throws first, since the write is Global and would
-	// otherwise outlive the run and start the next one on the wrong board.
+	// These three share state, each arriving on the target the one before it left
+	// behind. The `finally` is for the path where one of them throws first, since
+	// the write is Global and would otherwise outlive the run and start the next
+	// one on the wrong board.
 	try {
 		await checkTargetSwitch(api, root);
 		await checkDeviceStubs(root);
+		await checkMicroPythonBoards(root);
 	} finally {
 		await setTarget(undefined);
 	}
@@ -545,48 +546,34 @@ async function checkTargetSwitch(api: any, root: vscode.Uri): Promise<void> {
  * Runs after the switch check, which leaves the target on `microbit`.
  */
 async function checkDeviceStubs(root: vscode.Uri): Promise<void> {
-	const uri = vscode.Uri.joinPath(root, 'main.py');
-	const doc = await vscode.workspace.openTextDocument(uri);
-	await vscode.window.showTextDocument(doc);
-
-	const lines = doc.getText().split('\n');
-	const lineOf = (text: string) => {
-		const line = lines.findIndex((l) => l.startsWith(text));
-		assert(line >= 0, `test/workspace/main.py no longer contains a line starting "${text}"`);
-		return line;
-	};
-	const microbitLine = lineOf('from microbit import');
-	const subprocessLine = lineOf('import subprocess');
-	const unresolvedOn = async (line: number) =>
-		vscode.languages.getDiagnostics(uri).filter((d) => d.range.start.line === line && /report(Missing|Attribute)/.test(ruleOf(d)));
+	const bench = await openImports(root);
 
 	// The board's own modules. Waited on, because the session restarted moments ago.
-	const microbitProblems = await waitFor(() => unresolvedOn(microbitLine), (found) => found.length === 0, 60_000);
+	const microbitProblems = await waitFor(() => bench.unresolved(MICROBIT), (found) => found.length === 0, 60_000);
 	record('the selected board\'s modules resolve', (microbitProblems ?? []).length === 0,
-		`from microbit import ...: ${(microbitProblems ?? []).map((d) => oneLine(d.message)).join('; ') || 'no problems'}`);
+		`${MICROBIT}: ${problems(microbitProblems) || 'no problems'}`);
 
 	// The whole point of the bypass. A resolved `subprocess` means the engine's
 	// own CPython typeshed is live and a learner can autocomplete a desktop stdlib.
-	const cpython = await waitFor(() => unresolvedOn(subprocessLine), (found) => found.length > 0, 30_000);
+	const cpython = await waitFor(() => bench.unresolved(SUBPROCESS), (found) => found.length > 0, 30_000);
 	record('CPython\'s stdlib does NOT resolve', (cpython ?? []).length > 0,
-		`import subprocess: ${(cpython ?? []).map((d) => oneLine(d.message)).join('; ') || 'resolved, so the wrong typeshed is live'}`);
+		`${SUBPROCESS}: ${problems(cpython) || 'resolved, so the wrong typeshed is live'}`);
 
 	// Both halves matter: `sys` going red too would mean the seed replaced
 	// everything rather than bypassing, which reads the same from `subprocess` alone.
-	const stdlib = await unresolvedOn(lineOf('import sys'));
-	record('the board\'s own stdlib still resolves', stdlib.length === 0,
-		`import sys: ${stdlib.map((d) => oneLine(d.message)).join('; ') || 'no problems'}`);
+	const stdlib = await bench.unresolved(SYS);
+	record('the board\'s own stdlib still resolves', stdlib.length === 0, `${SYS}: ${problems(stdlib) || 'no problems'}`);
 
 	// Hover, not just the absence of a diagnostic: an import can resolve to an
 	// empty module, which is what a seed delivered through the wrong channel gives.
-	const display = await hoverAt(uri, microbitLine, doc.lineAt(microbitLine).text.indexOf('display'));
+	const display = await bench.hoverOn(MICROBIT, 'display');
 	record('a device module carries its real types', /display/.test(display ?? '') && !/Unknown/.test(display ?? ''),
 		`hover on display: ${oneLine(display)}`);
 
 	// Nothing we ship has source behind it, so this rule would fire on every
 	// device import if the severity override were dropped.
 	const missingSource = vscode.languages
-		.getDiagnostics(uri)
+		.getDiagnostics(bench.uri)
 		.filter((d) => ruleOf(d) === 'reportMissingModuleSource');
 	record('stub-only modules raise no missing-source warning', missingSource.length === 0,
 		`${missingSource.length} reportMissingModuleSource diagnostic(s) in main.py`);
@@ -595,15 +582,125 @@ async function checkDeviceStubs(root: vscode.Uri): Promise<void> {
 	// the new-worker rule exists for: the engine merges seeds and never removes,
 	// so a reconfigured session would still resolve `microbit` here.
 	await setTarget(undefined);
-	const gone = await waitFor(() => unresolvedOn(microbitLine), (found) => found.length > 0, 60_000);
+	const gone = await waitFor(() => bench.unresolved(MICROBIT), (found) => found.length > 0, 60_000);
 	record('switching away drops the previous board\'s modules', (gone ?? []).length > 0,
-		`after switching to the default target, from microbit import ...: ` +
-		`${(gone ?? []).map((d) => oneLine(d.message)).join('; ') || 'still resolving, so the seed leaked across the switch'}`);
+		`after switching to the default target, ${MICROBIT}: ` +
+		`${problems(gone) || 'still resolving, so the seed leaked across the switch'}`);
 
-	const stillStdlib = await unresolvedOn(lineOf('import sys'));
+	const stillStdlib = await bench.unresolved(SYS);
 	record('the default target keeps a working stdlib', stillStdlib.length === 0,
-		`import sys on the default target: ${stillStdlib.map((d) => oneLine(d.message)).join('; ') || 'no problems'}`);
+		`${SYS} on the default target: ${problems(stillStdlib) || 'no problems'}`);
 }
+
+/**
+ * MicroPython's shared base plus a board overlay, which is the first target
+ * built from two layers rather than one.
+ *
+ * Three things are only visible here. That an overlay resolves at all; that
+ * moving between two chip families takes the previous one's modules away, which
+ * a reconfigured session would not do since the engine merges seeds and never
+ * removes; and that the helper package the base has to relocate into the
+ * typeshed root is reachable. The last one cannot be seen from the module that
+ * imports it, because that module resolves either way and only the types coming
+ * through it turn `Unknown`.
+ *
+ * Arrives on the default target, which is what `checkDeviceStubs` leaves behind.
+ */
+async function checkMicroPythonBoards(root: vscode.Uri): Promise<void> {
+	const bench = await openImports(root);
+
+	// The first-run experience. A board module resolving with nothing selected
+	// means the default is pointed at some board's layer rather than the base.
+	const unchosen = await waitFor(() => bench.unresolved(MACHINE), (found) => found.length > 0, 60_000);
+	record('the default target offers no board modules', (unchosen ?? []).length > 0,
+		`${MACHINE} with no board selected: ${problems(unchosen) || 'resolved, so the default is not the bare stdlib'}`);
+
+	for (const [target, mine, theirs] of [
+		['micropython/esp32/esp32_generic', ESP32, RP2],
+		['micropython/rp2/rpi_pico', RP2, ESP32],
+	] as const) {
+		await setTarget(target);
+
+		// Both halves in one predicate, because the client clears its diagnostics
+		// while it restarts: "no problem on this line" is briefly true of every
+		// line, so waiting on it alone can pass before the new board has loaded.
+		const settled = await waitFor(
+			async () => ({ mine: await bench.unresolved(mine), theirs: await bench.unresolved(theirs) }),
+			(state) => state.mine.length === 0 && state.theirs.length > 0,
+			60_000
+		);
+		record(`${target} resolves its own board modules`, settled?.mine.length === 0,
+			`${mine}: ${problems(settled?.mine) || 'no problems'}`);
+		record(`${target} does not resolve another family's`, (settled?.theirs.length ?? 0) > 0,
+			`${theirs}: ${problems(settled?.theirs) || 'resolved, so the previous board survived the switch'}`);
+	}
+
+	// The relocated helper package, read through a signature rather than through
+	// the module that imports it: `sys` resolves whether or not the move happened.
+	const shed = await waitFor(() => bench.hoverOn(SHED_PROBE, 'print_exception'), carriesShedType, 30_000);
+	record('the base\'s helper package is reachable from the typeshed root', carriesShedType(shed),
+		`hover on sys.print_exception: ${oneLine(shed)}`);
+
+	// Same guarantee as the micro:bit target, on a two-layer one: the board's
+	// modules are there and desktop Python's still are not.
+	const cpython = await bench.unresolved(SUBPROCESS);
+	record('a two-layer target still hides CPython\'s stdlib', cpython.length > 0,
+		`${SUBPROCESS}: ${problems(cpython) || 'resolved, so the base layer restored the embedded typeshed'}`);
+}
+
+/** Bench lines these checks ask about, matched from the start of the line. */
+const SYS = 'import sys';
+const MICROBIT = 'from microbit import';
+const SUBPROCESS = 'import subprocess';
+const MACHINE = 'import machine';
+const ESP32 = 'import esp32';
+const RP2 = 'import rp2';
+const SHED_PROBE = 'sys.print_exception(';
+
+/**
+ * A type that only resolves if the standard library's helper package was moved
+ * into the typeshed root. `Unknown` is the shape of it not having been.
+ */
+const carriesShedType = (hover: string | undefined) => /IOBase_mp/.test(hover ?? '');
+
+/**
+ * The bench in an editor, and the two questions asked of it below: whether a
+ * line's import resolved, and what a symbol on it hovers as.
+ *
+ * Open, because diagnostics are pull-model and VS Code only pulls for documents
+ * it has. Re-read per call rather than captured, since every check here runs
+ * across a session restart.
+ */
+async function openImports(root: vscode.Uri) {
+	const uri = vscode.Uri.joinPath(root, 'main.py');
+	const doc = await vscode.workspace.openTextDocument(uri);
+	await vscode.window.showTextDocument(doc);
+
+	const lines = doc.getText().split('\n');
+	const lineOf = (start: string) => {
+		const line = lines.findIndex((text) => text.startsWith(start));
+		assert(line >= 0, `test/workspace/main.py no longer contains a line starting "${start}"`);
+		return line;
+	};
+
+	return {
+		uri,
+		unresolved: async (start: string) => {
+			const line = lineOf(start);
+			return vscode.languages
+				.getDiagnostics(uri)
+				.filter((d) => d.range.start.line === line && /report(Missing|Attribute)/.test(ruleOf(d)));
+		},
+		hoverOn: (start: string, symbol: string) => {
+			const line = lineOf(start);
+			return hoverAt(uri, line, doc.lineAt(line).text.indexOf(symbol));
+		},
+	};
+}
+
+/** Unresolved-import diagnostics as one line. Empty when the import resolved. */
+const problems = (found: readonly vscode.Diagnostic[] | undefined) =>
+	(found ?? []).map((d) => oneLine(d.message)).join('; ');
 
 /** Global, not Workspace: the web harness mounts the workspace read-only. */
 const setTarget = (id: string | undefined) =>

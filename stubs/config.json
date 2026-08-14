@@ -13,6 +13,211 @@
 			],
 			"sha256": "590f02313bf6a6f8f4f640d59b310fd0b7eaad6a355a12f70ced7d27246de016",
 			"typeshed": "lang/en/typeshed/"
+		},
+		"micropython-stdlib": {
+			"description": "The MicroPython standard library, shared by every board below. Carries the real VERSIONS and builtins, plus the _mpy_shed helper package that its own stubs and every board overlay import from.",
+			"url": "https://files.pythonhosted.org/packages/cd/e3/4edfda3791ea58edb220e319e9be9511545aa4c02e280bbe087c21c36038/micropython_stdlib_stubs-1.28.0.post6-py3-none-any.whl",
+			"version": "1.28.0.post6",
+			"format": "zip",
+			"license": "MIT, with the typeshed-derived files under Apache-2.0. LICENSE.md is fetched with the stubs and says which is which.",
+			"sha256": "b0a707f852365f03792b23964b48a0304cbb18eecc1b743e0d5b96712b775909"
+		},
+		"micropython-esp32-esp32_generic": {
+			"port": "esp32",
+			"board": "esp32_generic",
+			"label": "ESP32",
+			"url": "https://files.pythonhosted.org/packages/46/80/7f588fed3912d3af4fcae35fb2fd43fb7211c3404b6dd3c419aef7074a6f/micropython_esp32_esp32_generic_stubs-1.28.0.post4-py2.py3-none-any.whl",
+			"version": "1.28.0.post4",
+			"format": "zip",
+			"license": "MIT",
+			"sha256": "287bbc3e50c25b23f54d9a4e58e57a7e6623958d9f01a6d9c8856112b2d19769"
+		},
+		"micropython-esp32-esp32_generic_c3": {
+			"port": "esp32",
+			"board": "esp32_generic_c3",
+			"label": "ESP32-C3",
+			"url": "https://files.pythonhosted.org/packages/1c/34/c69d053efe2cb12611ef70cc273ea50e7c739f21561d6c0725d510b17222/micropython_esp32_esp32_generic_c3_stubs-1.28.0.post4-py2.py3-none-any.whl",
+			"version": "1.28.0.post4",
+			"format": "zip",
+			"license": "MIT",
+			"sha256": "b37ae6c01d405ba946e887841ed62120dffc703810348cc102f3d2d692ce7d08"
+		},
+		"micropython-esp32-esp32_generic_c5": {
+			"port": "esp32",
+			"board": "esp32_generic_c5",
+			"label": "ESP32-C5",
+			"url": "https://files.pythonhosted.org/packages/f3/eb/fad38199a815db909190dbc2fe91c72c19ba95ab21b432e067ea74ea4de0/micropython_esp32_esp32_generic_c5_stubs-1.28.0.post2-py2.py3-none-any.whl",
+			"version": "1.28.0.post2",
+			"format": "zip",
+			"license": "MIT",
+			"sha256": "765319aa898ae12da0a3194e221a13b6b14e86c59b552d31511a8f338f2e2d48"
+		},
+		"micropython-esp32-esp32_generic_c6": {
+			"port": "esp32",
+			"board": "esp32_generic_c6",
+			"label": "ESP32-C6",
+			"url": "https://files.pythonhosted.org/packages/29/00/1732b874d2b62b83a2f908772b9ba58f18cea4c2f41bcf38f84524287943/micropython_esp32_esp32_generic_c6_stubs-1.28.0.post4-py2.py3-none-any.whl",
+			"version": "1.28.0.post4",
+			"format": "zip",
+			"license": "MIT",
+			"sha256": "62f1b3d6fa52a2da8c1c088d52851b4b3c62ec9454f4e40416644098aa1b6e7d"
+		},
+		"micropython-esp32-esp32_generic_s2": {
+			"port": "esp32",
+			"board": "esp32_generic_s2",
+			"label": "ESP32-S2",
+			"url": "https://files.pythonhosted.org/packages/df/89/7e2f4b80f1af0521caf71152c9b6c43349363024eba1e6dc109bebbb885c/micropython_esp32_esp32_generic_s2_stubs-1.28.0.post4-py2.py3-none-any.whl",
+			"version": "1.28.0.post4",
+			"format": "zip",
+			"license": "MIT",
+			"sha256": "14312ebd6e1b4878959b7b996f294d9e494bd3e51b12feaf62b92ef48e6bec77"
+		},
+		"micropython-esp32-esp32_generic_s3": {
+			"port": "esp32",
+			"board": "esp32_generic_s3",
+			"label": "ESP32-S3",
+			"url": "https://files.pythonhosted.org/packages/09/6e/016c33d2d0479be27a148154aec91c4a37e7e15e67552adcb05e2cc45038/micropython_esp32_esp32_generic_s3_stubs-1.28.0.post4-py2.py3-none-any.whl",
+			"version": "1.28.0.post4",
+			"format": "zip",
+			"license": "MIT",
+			"sha256": "db5c8739c7c0f144596812eb6a49afe4673a377b0c413a70aa1ffbb12b4f1a3d"
+		},
+		"micropython-esp8266-esp8266_generic": {
+			"port": "esp8266",
+			"board": "esp8266_generic",
+			"label": "ESP8266",
+			"url": "https://files.pythonhosted.org/packages/1d/07/e70f82ad98800ce1b3272b17d4e6fc077dd96bc7802d784d091ebcca9a65/micropython_esp8266_esp8266_generic_stubs-1.28.0.post4-py2.py3-none-any.whl",
+			"version": "1.28.0.post4",
+			"format": "zip",
+			"license": "MIT",
+			"sha256": "5450f9b3f9df0816d71cc3da100a8bd26f809ef0b27dc8556a74a7e340310482"
+		},
+		"micropython-rp2-arduino_nano_rp2040_connect": {
+			"port": "rp2",
+			"board": "arduino_nano_rp2040_connect",
+			"label": "Arduino Nano RP2040 Connect",
+			"url": "https://files.pythonhosted.org/packages/1a/68/f8ec7b1a518ac665c5751212c4cafc79a8ff14d099fb4ee89c66ab1eec9d/micropython_rp2_arduino_nano_rp2040_connect_stubs-1.28.0.post4-py2.py3-none-any.whl",
+			"version": "1.28.0.post4",
+			"format": "zip",
+			"license": "MIT",
+			"sha256": "041ee331d06936d6d500098b89f26a019e41572d37e106e1bc148419715dea43"
+		},
+		"micropython-rp2-rpi_pico": {
+			"port": "rp2",
+			"board": "rpi_pico",
+			"label": "Raspberry Pi Pico",
+			"url": "https://files.pythonhosted.org/packages/a2/50/c4b1ffbcd51c89cec0452274bd03d93d9b33b2d32a975e76f7b645e92fc1/micropython_rp2_rpi_pico_stubs-1.28.0.post4-py2.py3-none-any.whl",
+			"version": "1.28.0.post4",
+			"format": "zip",
+			"license": "MIT",
+			"sha256": "7c64e2a17996ed942941a7872d8df57eb9009f2c751ec8f2aca5ca413a32e50f"
+		},
+		"micropython-rp2-rpi_pico_w": {
+			"port": "rp2",
+			"board": "rpi_pico_w",
+			"label": "Raspberry Pi Pico W",
+			"url": "https://files.pythonhosted.org/packages/34/fd/8882e0f968d481e8e739f7b69b65b05ee74b8662deea0497fb6981140cd2/micropython_rp2_rpi_pico_w_stubs-1.28.0.post4-py2.py3-none-any.whl",
+			"version": "1.28.0.post4",
+			"format": "zip",
+			"license": "MIT",
+			"sha256": "6337f87243cba58307d0a058860a36461616a820b7c758397f2144456f222a20"
+		},
+		"micropython-rp2-rpi_pico2": {
+			"port": "rp2",
+			"board": "rpi_pico2",
+			"label": "Raspberry Pi Pico 2",
+			"url": "https://files.pythonhosted.org/packages/d3/01/0661beb425cf9618a3be3263ee35c7e7ab6d7a644d43ce90f50df3a68444/micropython_rp2_rpi_pico2_stubs-1.28.0.post4-py2.py3-none-any.whl",
+			"version": "1.28.0.post4",
+			"format": "zip",
+			"license": "MIT",
+			"sha256": "518645b080069456fc60e0741e2bedd49ef3238081bce37f8a094426fdb24317"
+		},
+		"micropython-rp2-rpi_pico2_w": {
+			"port": "rp2",
+			"board": "rpi_pico2_w",
+			"label": "Raspberry Pi Pico 2 W",
+			"url": "https://files.pythonhosted.org/packages/d1/26/0c62b6f98a1ceb87fcfd5cbde82ec805add4bf3af06e48f43a9449b1a2c4/micropython_rp2_rpi_pico2_w_stubs-1.28.0.post4-py2.py3-none-any.whl",
+			"version": "1.28.0.post4",
+			"format": "zip",
+			"license": "MIT",
+			"sha256": "57713fda3f9124a4510e363d26dd9c3fe8ee359a19a210ecaf2690b9058eafcb"
+		},
+		"micropython-rp2-waveshare_rp2040_zero": {
+			"port": "rp2",
+			"board": "waveshare_rp2040_zero",
+			"label": "Waveshare RP2040-Zero",
+			"url": "https://files.pythonhosted.org/packages/9b/9b/79870e9db6329d2dd26d8d32498f7d33c22f4ded8f0999618b531c1cca7e/micropython_rp2_waveshare_rp2040_zero_stubs-1.28.0.post4-py2.py3-none-any.whl",
+			"version": "1.28.0.post4",
+			"format": "zip",
+			"license": "MIT",
+			"sha256": "b68ab580dffcd9e9b578dc4f038f08a8d1c5289370f77bf341d2365c483d74a9"
+		},
+		"micropython-samd-seeed_wio_terminal": {
+			"port": "samd",
+			"board": "seeed_wio_terminal",
+			"label": "Seeed Wio Terminal",
+			"url": "https://files.pythonhosted.org/packages/c0/2a/7b0526ed1820237a20d99b1db505f822aecb12f2ddeb8d38af4a860a10f1/micropython_samd_seeed_wio_terminal_stubs-1.28.0.post4-py2.py3-none-any.whl",
+			"version": "1.28.0.post4",
+			"format": "zip",
+			"license": "MIT",
+			"sha256": "9f087fdfced205f4223281d936dc39d9978d642690c2f7f271ac3602b24072b0"
+		},
+		"micropython-stm32-pybv11": {
+			"port": "stm32",
+			"board": "pybv11",
+			"label": "PyBoard v1.1",
+			"url": "https://files.pythonhosted.org/packages/b1/5e/8314298cacad73175d136265b2629c900defb14428faa7dd75e7b8a947e4/micropython_stm32_pybv11_stubs-1.28.0.post5-py2.py3-none-any.whl",
+			"version": "1.28.0.post5",
+			"format": "zip",
+			"license": "MIT",
+			"sha256": "78e0bb92e0dac35aae77c224ecc44f66c851249f15156b52bf83814ea790771e"
+		},
+		"micropython-unix": {
+			"port": "unix",
+			"label": "Unix port",
+			"url": "https://files.pythonhosted.org/packages/de/86/7d689e7f6aea3479863a1dd1c0d6e0e44db6a8bbab9d13aaf9ac146b1697/micropython_unix_stubs-1.28.0.post1-py2.py3-none-any.whl",
+			"version": "1.28.0.post1",
+			"format": "zip",
+			"license": "MIT",
+			"sha256": "6c05f0eeb7a3fc95f4eebed25f0f8c60cacce4da79b4ca5e7132048ab5d4186f"
+		},
+		"micropython-webassembly": {
+			"port": "webassembly",
+			"label": "WebAssembly port",
+			"url": "https://files.pythonhosted.org/packages/4a/82/dd77d307d3cc13d7d98cd0e849fc6b3ef7d564d0f86165869e0cce77fdf8/micropython_webassembly_stubs-1.28.0.post1-py2.py3-none-any.whl",
+			"version": "1.28.0.post1",
+			"format": "zip",
+			"license": "MIT",
+			"sha256": "4e8a42ff2618436ea00f331d23219773f2ca21236e2a167c088760784aae2ec5"
+		},
+		"micropython-windows": {
+			"port": "windows",
+			"label": "Windows port",
+			"url": "https://files.pythonhosted.org/packages/b5/4b/51eacfdcdcf4ce4504f8ef97844e624645154fcfd293dd2a16db4d551e13/micropython_windows_stubs-1.28.0.post1-py2.py3-none-any.whl",
+			"version": "1.28.0.post1",
+			"format": "zip",
+			"license": "MIT",
+			"sha256": "94baf3c3e5f21ff16a3dbc264e3ed44f295ad324c6b66dd8fffbbc3890c15ddf"
+		}
+	},
+	"skip": {
+		"micropython-esp32-stubs": {
+			"duplicateOf": "micropython-esp32-esp32_generic"
+		},
+		"micropython-esp8266-stubs": {
+			"duplicateOf": "micropython-esp8266-esp8266_generic"
+		},
+		"micropython-rp2-stubs": {
+			"duplicateOf": "micropython-rp2-rpi_pico_w",
+			"label": "RP2040 / RP2350 (generic)"
+		},
+		"micropython-samd-stubs": {
+			"duplicateOf": "micropython-samd-seeed_wio_terminal",
+			"label": "SAMD21 / SAMD51 (generic)"
+		},
+		"micropython-stm32-stubs": {
+			"duplicateOf": "micropython-stm32-pybv11",
+			"label": "STM32 (generic)"
 		}
 	}
 }

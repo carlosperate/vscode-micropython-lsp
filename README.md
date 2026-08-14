@@ -5,8 +5,8 @@ Embedded Python projects using MicroPython or CircuitPython 🐍🤖.
 
 Works on both desktop and web versions of VS Code, and compatible editors.
 
-🚧 This extension is still under development, currently only micro:bit stubs
-are implemented, but more will be added soon.
+🚧 This extension is still under development. The BBC micro:bit and MicroPython
+boards are implemented, CircuitPython will be added soon.
 
 ## Why this extension vs a generic Python LSP
 
@@ -26,18 +26,48 @@ and [CircuitPython](https://github.com/adafruit/circuitpython) projects.
 
 ## Supported boards
 
-🚧 This extension is still under development and only micro:bit stubs are
-implemented.
-
-Add to your workspace settings (`.vscode/settings.json`) a target board:
+Pick your board from the **MicroPython & CircuitPython Language Server > Target**
+dropdown in Settings, or add it to your workspace settings
+(`.vscode/settings.json`):
 
 ```json
 {
-  "micropython-lsp.target": "microbit"
+  "micropython-lsp.target": "micropython/rp2/rpi_pico_w"
 }
 ```
 
-More MicroPython and CircuitPython boards will be added soon in future releases.
+| Target | Boards |
+|---|---|
+| `auto` (the default) | none. The MicroPython standard library alone, so `sys` resolves and `machine` does not |
+| `microbit` | BBC micro:bit, running the Foundation's MicroPython (the one with `microbit`, `display` and `radio`) |
+| `micropython/esp32/…` | ESP32, and the C3, C5, C6, S2 and S3 variants |
+| `micropython/esp8266/esp8266_generic` | ESP8266 |
+| `micropython/rp2/…` | Raspberry Pi Pico, Pico W, Pico 2, Pico 2 W, Arduino Nano RP2040 Connect, Waveshare RP2040-Zero |
+| `micropython/samd/seeed_wio_terminal` | Seeed Wio Terminal |
+| `micropython/stm32/pybv11` | PyBoard v1.1 |
+| `micropython/unix`, `micropython/windows`, `micropython/webassembly` | the ports that run on a computer rather than a board |
+
+**Board not listed?** Pick the generic target for its chip, shown in the dropdown as
+`… (generic)`: `micropython/rp2` for any RP2040 or RP2350, `micropython/samd` for SAMD21 and
+SAMD51, `micropython/stm32` for STM32. These are the port-wide stubs MicroPython publishes, so
+they cover everything the port has in common and only miss the pin definitions specific to your
+board. For ESP32 and ESP8266 the port-wide stubs are what `micropython/esp32/esp32_generic` and
+`micropython/esp8266/esp8266_generic` already give you.
+
+**One board at a time, never a merge.** The same module means different things on
+different boards, `machine` most of all, so a combined set would offer you
+hardware you do not have. Changing the target restarts the language server with
+that board's modules and nothing else.
+
+MicroPython boards are stubbed at **1.28**; the micro:bit at **v0.4.0** of the
+Foundation's stubs. Older firmware gets slightly optimistic completions.
+
+If you flashed **upstream MicroPython** onto a micro:bit rather than the
+Foundation's build, pick `auto`, not `microbit`: your board has `machine` and
+the standard library, and none of the `microbit`, `display` or `radio` modules
+the `microbit` target offers.
+
+🚧 CircuitPython boards are next.
 
 ## What gets analysed
 

@@ -46,6 +46,8 @@ export const CATALOGUE = 'catalogue.json';
 export interface Target {
 	readonly id: string;
 	readonly label: string;
+	/** The id plus the firmware release, shown under the label in a picker. */
+	readonly description?: string;
 	/** Chip family, so a 628-entry picker can be grouped. */
 	readonly group?: string;
 	/** Layer files to merge, in order, addressed from the catalogue's own folder. */

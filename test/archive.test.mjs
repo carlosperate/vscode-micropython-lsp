@@ -1,7 +1,16 @@
 import { gunzipSync, gzipSync } from 'node:zlib';
+import { strToU8, zipSync } from 'fflate';
 import { describe, expect, it } from 'vitest';
 
-import { digest, extractArchive, extractTar, extractTarGz, selectTree, verifyArchive } from '../stubs/archive.mjs';
+import {
+	digest,
+	extractArchive,
+	extractTar,
+	extractTarGz,
+	extractZip,
+	selectTree,
+	verifyArchive,
+} from '../stubs/archive.mjs';
 
 const BLOCK = 512;
 
@@ -107,15 +116,34 @@ describe('extractTarGz', () => {
 	});
 });
 
+describe('extractZip', () => {
+	it('reads entries with their content, directories dropped', () => {
+		// The wheels carry both compression methods, deflate for stubs and stored
+		// for anything deflate cannot shrink, so the fixture uses both.
+		const files = extractZip(Buffer.from(zipSync({
+			'stdlib/VERSIONS': strToU8('sys: 3.0-\n'),
+			'machine.pyi': [strToU8('x'), { level: 0 }],
+			'rp2/': strToU8(''),
+		})));
+		expect([...files.keys()].sort()).toEqual(['machine.pyi', 'stdlib/VERSIONS']);
+		expect(text(files, 'stdlib/VERSIONS')).toBe('sys: 3.0-\n');
+	});
+
+	it('refuses something that is not a zip at all', () => {
+		expect(() => extractZip(Buffer.from('not an archive'))).toThrow();
+	});
+});
+
 describe('extractArchive', () => {
 	it('reads the format a source declares', () => {
 		expect([...extractArchive(tarGz([{ name: 'a.pyi', body: 'x' }]), 'tar.gz').keys()]).toEqual(['a.pyi']);
+		expect([...extractArchive(Buffer.from(zipSync({ 'a.pyi': strToU8('x') })), 'zip').keys()]).toEqual(['a.pyi']);
 	});
 
 	it('refuses a format it does not know rather than guessing', () => {
-		// The wheels arrive as zip. Until that reader exists, a config saying so
-		// has to fail here rather than be handed to the tar reader.
-		expect(() => extractArchive(Buffer.alloc(0), 'zip')).toThrow(/zip/);
+		// Dispatching on a declared format, so a config naming something we cannot
+		// read has to fail here rather than hand a stream to the wrong reader.
+		expect(() => extractArchive(Buffer.alloc(0), '7z')).toThrow(/7z/);
 	});
 });
 

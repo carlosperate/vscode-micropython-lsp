@@ -3,5 +3,6 @@
 	// setting anything first. The level is deliberately not pinned: raise it for
 	// the session instead, since a workspace value here would outrank the
 	// user-scoped writes the integration gate makes to test the level.
-	"micropython-lsp.mirrorLogsToConsole": true
+	"micropython-lsp.mirrorLogsToConsole": true,
+	"micropython-lsp.target": "microbit"
 }

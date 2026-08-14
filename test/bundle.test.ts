@@ -80,6 +80,17 @@ describe('extension bundles', () => {
 		expect(emitted).toContain(manifest.browser);
 	});
 
+	// Every asset the manifest names has to be one the build emits. The icon was
+	// declared and not copied, which VS Code shows as a placeholder in the
+	// Extensions view and reports nowhere, and only an out-of-tree build like this
+	// one can see it: in-tree the file is already sitting where the manifest says.
+	it('emits every file the manifest points at', async () => {
+		const manifest = JSON.parse(await readFile(path.join(projectRoot, 'package.json'), 'utf8'));
+		for (const asset of [manifest.icon, manifest.browser]) {
+			expect((await stat(path.join(outDir, ...asset.split('/')))).isFile(), asset).toBe(true);
+		}
+	});
+
 	// The stub layers, which are copied rather than bundled and are addressed by
 	// directory. The client builds this path from `context.extensionUri`, so it is
 	// the same coupling the worker paths above are guarding.
