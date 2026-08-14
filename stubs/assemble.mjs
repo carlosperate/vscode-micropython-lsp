@@ -186,6 +186,13 @@ export function micropythonTarget(source, layer = boardLayer(source)) {
  * @param {object} source the config source it duplicates
  */
 export function genericTarget(entry, source) {
+	// Without a port there is no layer to share, and every field derived below
+	// would read "undefined": a target id nobody can select, pointing at a file the
+	// build never wrote. Only the catalogue-wide check in `bundle.test.ts` would
+	// catch it, and only after a release had been assembled.
+	if (!source?.port) {
+		throw new Error(`generic "${entry.label}": "duplicateOf": "${entry.duplicateOf}" is not a board source`);
+	}
 	return micropythonTarget({ port: source.port, label: entry.label, version: source.version }, boardLayer(source));
 }
 
@@ -325,9 +332,9 @@ async function assembleMicroPython(sources, skip) {
 		},
 	];
 
+	const boards = Object.entries(sources).filter(([, entry]) => entry.port);
 	let shared;
-	let overlays = 0;
-	for (const [id, board] of Object.entries(sources).filter(([, entry]) => entry.port)) {
+	for (const [id, board] of boards) {
 		const wheel = await cachedTree(id, board);
 		const overlay = toLayer(wheel, wheelRoots(wheel).map((root) => ({ from: root, to: `stdlib/${root}` })));
 		const target = micropythonTarget(board);
@@ -338,7 +345,6 @@ async function assembleMicroPython(sources, skip) {
 		if (shared === undefined) shared = licence;
 		else assertSameLicence(id, shared, licence);
 		targets.push(target);
-		overlays += 1;
 	}
 
 	// One copy for all of them, having just checked they say the same thing. The
@@ -350,15 +356,11 @@ async function assembleMicroPython(sources, skip) {
 	// the ones the config gives a label to: a port whose flagship board is already
 	// called something generic ("ESP32", "ESP8266") would otherwise get a second
 	// entry meaning exactly the same thing.
-	const generics = Object.entries(skip).filter(([, entry]) => entry.label);
-	for (const [name, entry] of generics) {
-		const board = sources[entry.duplicateOf];
-		if (!board) throw new Error(`${name}: "duplicateOf": "${entry.duplicateOf}" is not a source in config.json`);
-		targets.push(genericTarget(entry, board));
-	}
+	const generics = Object.values(skip).filter((entry) => entry.label);
+	for (const entry of generics) targets.push(genericTarget(entry, sources[entry.duplicateOf]));
 
 	console.log(
-		`[stubs] micropython: ${Object.keys(base.files).length} base files + ${overlays} board overlays` +
+		`[stubs] micropython: ${Object.keys(base.files).length} base files + ${boards.length} board overlays` +
 			` + ${generics.length} generic port targets sharing them`
 	);
 	return targets;

@@ -98,10 +98,7 @@
 						"micropython/samd",
 						"micropython/stm32",
 						"micropython/samd/seeed_wio_terminal",
-						"micropython/unix",
-						"micropython/rp2/waveshare_rp2040_zero",
-						"micropython/webassembly",
-						"micropython/windows"
+						"micropython/rp2/waveshare_rp2040_zero"
 					],
 					"enumItemLabels": [
 						"MicroPython (no board selected)",
@@ -123,10 +120,7 @@
 						"MicroPython: SAMD21 / SAMD51 (generic)",
 						"MicroPython: STM32 (generic)",
 						"MicroPython: Seeed Wio Terminal",
-						"MicroPython: Unix port",
-						"MicroPython: Waveshare RP2040-Zero",
-						"MicroPython: WebAssembly port",
-						"MicroPython: Windows port"
+						"MicroPython: Waveshare RP2040-Zero"
 					],
 					"enumDescriptions": [
 						"auto",
@@ -148,10 +142,7 @@
 						"micropython/samd (MicroPython 1.28)",
 						"micropython/stm32 (MicroPython 1.28)",
 						"micropython/samd/seeed_wio_terminal (MicroPython 1.28)",
-						"micropython/unix (MicroPython 1.28)",
-						"micropython/rp2/waveshare_rp2040_zero (MicroPython 1.28)",
-						"micropython/webassembly (MicroPython 1.28)",
-						"micropython/windows (MicroPython 1.28)"
+						"micropython/rp2/waveshare_rp2040_zero (MicroPython 1.28)"
 					],
 					"order": 2
 				},

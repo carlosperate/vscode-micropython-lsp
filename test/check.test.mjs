@@ -104,6 +104,50 @@ describe('the skip list in config.json', () => {
 	});
 });
 
+describe('the excluded list in config.json', () => {
+	it('ships only embedded boards, never a port that runs on a computer', async () => {
+		// The desktop and browser ports are published upstream and deliberately left
+		// out, so this is the decision itself rather than a description of the config:
+		// re-adding one has to be a considered edit here, not a quiet line in a bump.
+		const { sources, excluded } = await readConfig();
+		for (const port of ['unix', 'windows', 'webassembly']) {
+			expect(Object.values(sources).map((source) => source.port)).not.toContain(port);
+			expect(excluded[`micropython-${port}`], `${port} unaccounted for`).toBeTruthy();
+		}
+	});
+
+	it('gives a reason for every name, since that is all it is', async () => {
+		// The value is the whole entry, so an empty one leaves a package suppressed
+		// from the report with nothing saying why it was.
+		const { excluded } = await readConfig();
+		for (const [name, reason] of Object.entries(excluded)) {
+			expect(typeof reason, `${name} reason`).toBe('string');
+			expect(reason.length, `${name} reason`).toBeGreaterThan(0);
+		}
+	});
+
+	it('never names a package another list already covers', async () => {
+		// All three are keyed by our own id, so one package has one entry and the
+		// three lists partition them: shipped, skipped as a duplicate, or excluded on
+		// purpose. An id in two of them means two answers to what we do with it.
+		const { sources, skip, excluded } = await readConfig();
+		const lists = [Object.keys(sources), Object.keys(skip), Object.keys(excluded)];
+		const all = lists.flat();
+		expect(all.filter((id, at) => all.indexOf(id) !== at)).toEqual([]);
+	});
+
+	it('keys every list by our id, never by the name a registry happens to use', async () => {
+		// The PyPI name is `<id>-stubs`, but CircuitPython's stubs come from GitHub
+		// releases and carry no such suffix. Keying on it would put one flavour's
+		// packaging convention in a file that has to describe every flavour, and make
+		// moving an entry between lists a rename.
+		const { skip, excluded } = await readConfig();
+		for (const id of [...Object.keys(skip), ...Object.keys(excluded)]) {
+			expect(id, `${id} is keyed by its PyPI name`).not.toMatch(/-stubs$/);
+		}
+	});
+});
+
 describe('latestInSeries', () => {
 	const versions = ['1.28.0.post1', '1.28.0.post4', '1.28.0.post10', '1.29.0.post1'];
 

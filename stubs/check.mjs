@@ -7,9 +7,9 @@
  * release. This reports those, and changes nothing: every pin is a deliberate
  * edit to `config.json`.
  *
- * It exits non-zero only when a claim in `config.json` has become false, never
- * merely because an update exists. News does not fail a run; a wrong assertion
- * does.
+ * It exits non-zero when a claim in `config.json` has become false, or when a
+ * check could not run at all, never merely because an update exists. News does
+ * not fail a run; a wrong assertion, or an unverified one, does.
  *
  * Boards are discovered through **Josverl's `publish/` directory**, not PyPI.
  * PyPI has no usable search, so the alternative is guessing names; that
@@ -84,7 +84,15 @@ const series = (version) => version.split('.post')[0];
 const post = (version) => Number(/\.post(\d+)$/.exec(version)?.[1] ?? 0);
 const order = (release) => release.split('.').reduce((total, part) => total * 1000 + Number(part), 0);
 
-/** PyPI's own name for a source, by the convention `config.json` is written to. */
+/**
+ * PyPI's own name for one of our ids.
+ *
+ * `config.json` is keyed by our id throughout, never by a registry's name for
+ * the same thing: CircuitPython's stubs come from GitHub releases and carry no
+ * `-stubs` suffix, so keying on it would put one flavour's packaging convention
+ * in a file that has to describe every flavour. This is the one place the two
+ * meet, and the report speaks PyPI's names because it is about PyPI.
+ */
 const pypiName = (id) => `${id}-stubs`;
 
 /** The sources this covers: the shared base and every board, never micro:bit. */
@@ -125,16 +133,20 @@ function stubDigest(bytes) {
 }
 
 /**
- * One line of the report: what was checked and what it says.
+ * One line of the report: what was checked, what it says, and what it means.
  *
- * Two kinds of "not ok", because they deserve different reactions. `ok` is
- * "nothing to act on", which decides whether the run ends with the all-clear:
- * a published update is news, and acting on it is a deliberate edit. `drift` is
- * narrower and decides the exit code: something `config.json` asserts that
- * upstream has since made false. Only drift can make this command fail, so a
- * routine post-release does not cry wolf.
+ * Four states, because they deserve different reactions. `ok` needs nothing.
+ * `news` is an update that exists and is worth taking, which is a deliberate
+ * edit rather than a failure, so it deliberately cannot set the exit code: a
+ * routine post-release must not page anyone. `drift` is a claim in
+ * `config.json` that upstream has made false. `unknown` is a check that could
+ * not run at all, almost always the network, and fails the same way for the
+ * opposite reason: nothing was verified, so nothing may be reported as verified.
  */
-const line = (name, note, { ok = true, drift = false } = {}) => ({ name, note, ok: ok && !drift, drift });
+const line = (name, note, status = 'ok') => ({ name, note, status });
+
+/** The states that mean this run proved nothing, and so set the exit code. */
+const unresolved = (entry) => entry.status === 'drift' || entry.status === 'unknown';
 
 /** Is a newer post-release of this pin published? */
 async function checkPin([id, source]) {
@@ -142,11 +154,21 @@ async function checkPin([id, source]) {
 	try {
 		const newer = latestInSeries(Object.keys((await pypi(name)).releases), source.version);
 		const note = newer ? `${source.version}  UPDATE AVAILABLE (${newer})` : `${source.version}  up to date`;
-		return line(name, note, { ok: !newer });
+		return line(name, note, newer ? 'news' : 'ok');
 	} catch (error) {
-		return line(name, `lookup failed: ${error}`, { drift: true });
+		return line(name, `lookup failed: ${error}`, 'unknown');
 	}
 }
+
+/**
+ * A package we have decided not to ship, whose entry is just the reason why.
+ *
+ * Nothing to verify, unlike `skip`: there is no duplicate behind it, only a
+ * choice. Listed in `config.json` so `comparePackages` stops calling it new, and
+ * reported so the choice stays visible rather than living in a file nobody
+ * reopens.
+ */
+const checkExcluded = ([id, reason]) => line(pypiName(id), reason);
 
 /**
  * Is a skipped package still the duplicate the config says it is?
@@ -159,10 +181,11 @@ async function checkPin([id, source]) {
  * the generic starts lying about what it covers and the package becomes a board
  * worth carrying. Nothing else would notice.
  */
-async function checkSkip([name, entry], sources) {
-	const id = entry?.duplicateOf;
+async function checkSkip([skipped, entry], sources) {
+	const name = pypiName(skipped);
+	const id = entry.duplicateOf;
 	const source = sources[id];
-	if (!source) return line(name, `"duplicateOf": "${id}" is not a source in config.json`, { drift: true });
+	if (!source) return line(name, `"duplicateOf": "${id}" is not a source in config.json`, 'drift');
 
 	try {
 		const [theirs, ours] = await Promise.all([pypi(name), pypi(pypiName(id))]);
@@ -177,11 +200,9 @@ async function checkSkip([name, entry], sources) {
 		// so this cannot go stale in the direction that matters: whatever the board
 		// gains upstream, the question stays "is what we ship still the whole port?".
 		const generic = entry.label ? `, and "${entry.label}" no longer covers what it says` : '';
-		return line(name, `${version} no longer matches ${id}, so it is a board in its own right now${generic}`, {
-			drift: true,
-		});
+		return line(name, `${version} no longer matches ${id}, so it is a board in its own right now${generic}`, 'drift');
 	} catch (error) {
-		return line(name, `lookup failed: ${error}`, { drift: true });
+		return line(name, `lookup failed: ${error}`, 'unknown');
 	}
 }
 
@@ -191,7 +212,7 @@ function report(title, lines, width) {
 }
 
 export async function checkMicroPythonPackages() {
-	const { sources, skip = {} } = await readConfig();
+	const { sources, skip = {}, excluded = {} } = await readConfig();
 	const base = sources[MICROPYTHON_BASE];
 	if (!base) throw new Error(`config.json has no "${MICROPYTHON_BASE}" source to take the release from`);
 
@@ -202,25 +223,36 @@ export async function checkMicroPythonPackages() {
 	// folder per release, so it can never turn up in this comparison.
 	const folders = (await json(PUBLISH)).map((entry) => entry.name);
 	const upstream = folders.map((folder) => packageOf(folder, publishPrefix(base.version))).filter(Boolean);
-	const boards = pinned.filter(([id]) => id !== MICROPYTHON_BASE).map(([id]) => pypiName(id));
-	const { added, gone } = comparePackages(upstream, new Set([...boards, ...Object.keys(skip)]));
+	// Everything config.json accounts for, however it accounts for it: shipped,
+	// skipped as a duplicate, or excluded on purpose. Anything else is genuinely
+	// new. All three are keyed by our id, so one translation covers the lot.
+	const boards = pinned.filter(([id]) => id !== MICROPYTHON_BASE).map(([id]) => id);
+	const known = new Set([...boards, ...Object.keys(skip), ...Object.keys(excluded)].map(pypiName));
+	const { added, gone } = comparePackages(upstream, known);
 
 	const pins = await Promise.all(pinned.map(checkPin));
 	const skips = await Promise.all(Object.entries(skip).map((entry) => checkSkip(entry, sources)));
-	const width = Math.max(...[...pins, ...skips].map((entry) => entry.name.length));
+	const exclusions = Object.entries(excluded).map(checkExcluded);
+	const width = Math.max(...[...pins, ...skips, ...exclusions].map((entry) => entry.name.length));
 
 	report('Pinned', pins, width);
 	console.log('');
 	report('Skipped as duplicates', skips, width);
 	console.log('');
+	if (exclusions.length) {
+		report('Excluded', exclusions, width);
+		console.log('');
+	}
 
 	if (added.length) {
 		console.log(`${added.length} package(s) upstream that config.json does not mention:`);
 		for (const name of added) console.log(`  ${name}`);
-		console.log('Add each as a source, or to "skip" if it duplicates one we already ship.');
+		console.log('Add each as a source, to "skip" if it duplicates one we ship, or to "excluded".');
 	}
 	if (gone.length) {
-		console.log(`${gone.length} pinned package(s) upstream no longer publishes:`);
+		// Not "pinned": this set is everything config.json names, so a withdrawn
+		// package could equally be one we skip or one we excluded on purpose.
+		console.log(`${gone.length} package(s) config.json names that upstream no longer publishes:`);
 		for (const name of gone) console.log(`  ${name}`);
 	}
 
@@ -230,28 +262,28 @@ export async function checkMicroPythonPackages() {
 		console.log('Moving is a catalogue-wide change: every URL, version and checksum in config.json.');
 	}
 
-	const drifted = [...pins, ...skips].filter((entry) => entry.drift);
-	if (drifted.length) {
-		console.log(`${drifted.length} check(s) found config.json asserting something upstream no longer supports:`);
-		for (const { name, note } of drifted) console.log(`  ${name}  ${note}`);
+	const checked = [...pins, ...skips];
+	const failed = checked.filter(unresolved);
+	if (failed.length) {
+		console.log(`${failed.length} check(s) did not come back clean:`);
+		for (const { name, note } of failed) console.log(`  ${name}  ${note}`);
 	}
 
-	const settled = [...pins, ...skips].every((entry) => entry.ok);
-	if (settled && !added.length && !gone.length && !releases.length) {
+	if (checked.every((entry) => entry.status === 'ok') && !added.length && !gone.length && !releases.length) {
 		console.log('Everything is current: no new boards, no newer post-releases, no new release.');
 	}
-	return { drifted: drifted.length };
+	return { failed: failed.length };
 }
 
 // `pathToFileURL`, not a template string: only it produces the percent-encoding
 // and the `file:///C:/` shape `import.meta.url` carries on Windows.
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMain) {
-	// Non-zero only on drift, so this is safe to wire into a scheduled job: an
-	// available update is news and must not page anyone.
+	// Never non-zero for an available update, so this is safe to wire into a
+	// scheduled job: only a false claim or a check that could not run fails it.
 	checkMicroPythonPackages()
-		.then(({ drifted }) => {
-			if (drifted) process.exitCode = 1;
+		.then(({ failed }) => {
+			if (failed) process.exitCode = 1;
 		})
 		.catch((error) => {
 			console.error(String(error));

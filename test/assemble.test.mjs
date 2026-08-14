@@ -127,14 +127,16 @@ describe('assertDisjoint', () => {
 
 describe('micropythonTarget', () => {
 	const pico = { port: 'rp2', board: 'rpi_pico', label: 'Raspberry Pi Pico', version: '1.28.0.post4' };
-	const unix = { port: 'unix', label: 'Unix port', version: '1.28.0.post1' };
+	// No board, which is what a whole-port generic is. Every source we ship names
+	// one, so `genericTarget` is the only caller that takes this branch.
+	const port = { port: 'rp2', label: 'RP2040 / RP2350 (generic)', version: '1.28.0.post4' };
 
 	it('builds the id from the port and the board', () => {
 		expect(micropythonTarget(pico).id).toBe('micropython/rp2/rpi_pico');
 	});
 
-	it('drops the board segment for a port that has no board variants', () => {
-		expect(micropythonTarget(unix).id).toBe('micropython/unix');
+	it('drops the board segment for a source that names no board', () => {
+		expect(micropythonTarget(port).id).toBe('micropython/rp2');
 	});
 
 	it('leads the label with the flavour, so one language reads as one run', () => {
@@ -155,7 +157,7 @@ describe('micropythonTarget', () => {
 		// the one the build writes or the target resolves to nothing.
 		expect(micropythonTarget(pico).layers).toEqual(['micropython/stdlib.json', boardLayer(pico)]);
 		expect(boardLayer(pico)).toBe('micropython/boards/rp2-rpi_pico.json');
-		expect(boardLayer(unix)).toBe('micropython/boards/unix.json');
+		expect(boardLayer(port)).toBe('micropython/boards/rp2.json');
 	});
 
 	it('groups by port, so a long list can be broken up', () => {
@@ -175,6 +177,15 @@ describe('genericTarget', () => {
 	it('reads as a board name, so the dropdown stays one list', () => {
 		expect(genericTarget(entry, pico).label).toBe('MicroPython: RP2040 / RP2350 (generic)');
 		expect(genericTarget(entry, pico).group).toBe('rp2');
+	});
+
+	it('refuses a source that is not a board', () => {
+		// Every field is derived from the port, so without one the target is
+		// `micropython/undefined` pointing at a layer the build never wrote. It
+		// resolves to nothing, and only the catalogue-wide check in `bundle.test.ts`
+		// would say so, after a release had already been assembled.
+		expect(() => genericTarget(entry, { version: '1.28.0.post6' })).toThrow(/not a board source/);
+		expect(() => genericTarget(entry, undefined)).toThrow(/not a board source/);
 	});
 
 	it('shares the layers of the board it duplicates, so it costs no bytes', () => {
@@ -245,10 +256,10 @@ describe('orderTargets', () => {
 	const targets = [
 		{ id: 'auto', label: 'MicroPython (no board selected)' },
 		{ id: 'micropython/rp2/waveshare_rp2040_zero', label: 'MicroPython: Waveshare RP2040-Zero' },
-		{ id: 'micropython/windows', label: 'MicroPython: Windows port' },
+		{ id: 'micropython/stm32/pybv11', label: 'MicroPython: PyBoard v1.1' },
 		{ id: 'micropython/esp32/esp32_generic', label: 'MicroPython: ESP32' },
 		{ id: 'microbit', label: 'BBC micro:bit' },
-		{ id: 'micropython/webassembly', label: 'MicroPython: WebAssembly port' },
+		{ id: 'micropython/rp2', label: 'MicroPython: RP2040 / RP2350 (generic)' },
 	];
 
 	it('keeps the default first and sorts the boards by label', () => {
@@ -258,9 +269,9 @@ describe('orderTargets', () => {
 			'MicroPython (no board selected)',
 			'BBC micro:bit',
 			'MicroPython: ESP32',
+			'MicroPython: PyBoard v1.1',
+			'MicroPython: RP2040 / RP2350 (generic)',
 			'MicroPython: Waveshare RP2040-Zero',
-			'MicroPython: WebAssembly port',
-			'MicroPython: Windows port',
 		]);
 	});
 

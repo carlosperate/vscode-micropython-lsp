@@ -171,53 +171,31 @@
 			"format": "zip",
 			"license": "MIT",
 			"sha256": "78e0bb92e0dac35aae77c224ecc44f66c851249f15156b52bf83814ea790771e"
-		},
-		"micropython-unix": {
-			"port": "unix",
-			"label": "Unix port",
-			"url": "https://files.pythonhosted.org/packages/de/86/7d689e7f6aea3479863a1dd1c0d6e0e44db6a8bbab9d13aaf9ac146b1697/micropython_unix_stubs-1.28.0.post1-py2.py3-none-any.whl",
-			"version": "1.28.0.post1",
-			"format": "zip",
-			"license": "MIT",
-			"sha256": "6c05f0eeb7a3fc95f4eebed25f0f8c60cacce4da79b4ca5e7132048ab5d4186f"
-		},
-		"micropython-webassembly": {
-			"port": "webassembly",
-			"label": "WebAssembly port",
-			"url": "https://files.pythonhosted.org/packages/4a/82/dd77d307d3cc13d7d98cd0e849fc6b3ef7d564d0f86165869e0cce77fdf8/micropython_webassembly_stubs-1.28.0.post1-py2.py3-none-any.whl",
-			"version": "1.28.0.post1",
-			"format": "zip",
-			"license": "MIT",
-			"sha256": "4e8a42ff2618436ea00f331d23219773f2ca21236e2a167c088760784aae2ec5"
-		},
-		"micropython-windows": {
-			"port": "windows",
-			"label": "Windows port",
-			"url": "https://files.pythonhosted.org/packages/b5/4b/51eacfdcdcf4ce4504f8ef97844e624645154fcfd293dd2a16db4d551e13/micropython_windows_stubs-1.28.0.post1-py2.py3-none-any.whl",
-			"version": "1.28.0.post1",
-			"format": "zip",
-			"license": "MIT",
-			"sha256": "94baf3c3e5f21ff16a3dbc264e3ed44f295ad324c6b66dd8fffbbc3890c15ddf"
 		}
 	},
 	"skip": {
-		"micropython-esp32-stubs": {
+		"micropython-esp32": {
 			"duplicateOf": "micropython-esp32-esp32_generic"
 		},
-		"micropython-esp8266-stubs": {
+		"micropython-esp8266": {
 			"duplicateOf": "micropython-esp8266-esp8266_generic"
 		},
-		"micropython-rp2-stubs": {
+		"micropython-rp2": {
 			"duplicateOf": "micropython-rp2-rpi_pico_w",
 			"label": "RP2040 / RP2350 (generic)"
 		},
-		"micropython-samd-stubs": {
+		"micropython-samd": {
 			"duplicateOf": "micropython-samd-seeed_wio_terminal",
 			"label": "SAMD21 / SAMD51 (generic)"
 		},
-		"micropython-stm32-stubs": {
+		"micropython-stm32": {
 			"duplicateOf": "micropython-stm32-pybv11",
 			"label": "STM32 (generic)"
 		}
+	},
+	"excluded": {
+		"micropython-unix": "Runs on a computer, not an embedded board.",
+		"micropython-webassembly": "Runs in a browser, not an embedded board.",
+		"micropython-windows": "Runs on a computer, not an embedded board."
 	}
 }
