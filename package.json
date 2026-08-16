@@ -3,7 +3,7 @@
 	"displayName": "MicroPython & CircuitPython Language Server",
 	"description": "Autocomplete, type checking and inline docs for MicroPython and CircuitPython. Work on VSCode web in the browser.",
 	"publisher": "carlosperate",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"license": "MIT",
 	"icon": "assets/icon.png",
 	"engines": {
