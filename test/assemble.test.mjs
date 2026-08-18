@@ -257,6 +257,19 @@ describe('parseBoardStub', () => {
 		expect(parseBoardStub(stub).modules).toEqual(['_bleio', 'board', 'busio', 'os', 'socketpool', 'wifi']);
 	});
 
+	// Two Wemos boards carry a trailing comment on the `#define` upstream reads
+	// the name from, and its `strip('"')` cannot remove the interior quote.
+	it('drops a trailing C comment upstream left in the name', () => {
+		const wemos = stub.replace('Board stub for Raspberry Pi Pico W', 'Board stub for Wemos Lolin C3 Pico" // from Wemos MP');
+		expect(parseBoardStub(wemos).name).toBe('Wemos Lolin C3 Pico');
+	});
+
+	// Cut at the first quote instead and this loses everything after it.
+	it('keeps a quote that is part of the name', () => {
+		const inches = stub.replace('Board stub for Raspberry Pi Pico W', 'Board stub for Adafruit 3.5" TFT FeatherWing');
+		expect(parseBoardStub(inches).name).toBe('Adafruit 3.5" TFT FeatherWing');
+	});
+
 	it('refuses a definition with no generated docstring', () => {
 		// The docstring is the only per-board data there is. Without it the board
 		// would take an empty allowlist, which filters the standard library away and

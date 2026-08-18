@@ -277,7 +277,7 @@ export function sdistRoots(tree) {
  */
 export function parseBoardStub(text) {
 	const field = (label) => new RegExp(`^\\s*-\\s*${label}:\\s*(.+)$`, 'm').exec(text)?.[1]?.trim();
-	const name = /Board stub for (.+)/.exec(text)?.[1]?.trim();
+	const name = boardName(/Board stub for (.+)/.exec(text)?.[1]?.trim());
 	const port = field('port');
 	const id = field('board_id');
 	const listed = field('Included modules');
@@ -290,6 +290,18 @@ export function parseBoardStub(text) {
 		.map((entry) => entry.trim().split(' ')[0].split('.')[0])
 		.filter(Boolean);
 	return { name, port, id, modules: [...new Set(modules)].sort() };
+}
+
+/**
+ * Undoes upstream's extraction bug: its regex takes the rest of the `#define`
+ * line and its `strip('"')` cannot remove an interior quote, so two Wemos boards
+ * are named `Wemos Lolin C3 Pico" // from Wemos MP`. Cutting at a quote only when
+ * a comment follows leaves an inch mark in a real name alone.
+ *
+ * @param {string | undefined} name
+ */
+function boardName(name) {
+	return name?.replace(/"\s*\/\/.*$/, '').trim();
 }
 
 /** Where a CircuitPython board's overlay is written, and what its target names. */
