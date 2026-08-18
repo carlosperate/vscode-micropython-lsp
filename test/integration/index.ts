@@ -228,6 +228,7 @@ export async function run(): Promise<void> {
 		await checkTargetSwitch(api, root);
 		await checkDeviceStubs(root);
 		await checkMicroPythonBoards(root);
+		await checkCircuitPythonBoards(root);
 	} finally {
 		await setTarget(undefined);
 	}
@@ -648,6 +649,68 @@ async function checkMicroPythonBoards(root: vscode.Uri): Promise<void> {
 		`${SUBPROCESS}: ${problems(cpython) || 'resolved, so the base layer restored the embedded typeshed'}`);
 }
 
+/**
+ * CircuitPython, the first flavour where two boards differ by what the base
+ * offers them rather than by what their own layer adds.
+ *
+ * 628 boards share one base of 217 files, so this is the only check that can see
+ * the allowlist work: `wifi` is in the base either way, and the two Picos differ
+ * only in whether their board says it has a radio. Getting that wrong offers a
+ * learner hardware they do not have, and it takes the real merge at load time to
+ * see, so no unit test can.
+ *
+ * Arrives on whichever MicroPython board the check before it left.
+ */
+async function checkCircuitPythonBoards(root: vscode.Uri): Promise<void> {
+	const bench = await openImports(root);
+
+	await setTarget('circuitpython/raspberry_pi_pico_w');
+	// One predicate over all three, because the client clears its diagnostics
+	// while it restarts: every line is briefly clean, so waiting on the resolving
+	// half alone can pass before the new board has loaded.
+	const settled = await waitFor(
+		async () => ({
+			board: await bench.unresolved(BOARD),
+			radio: await bench.unresolved(WIFI),
+			micropython: await bench.unresolved(MACHINE),
+		}),
+		(state) => state.board.length === 0 && state.radio.length === 0 && state.micropython.length > 0,
+		60_000
+	);
+	record('a CircuitPython board resolves its own modules', settled?.board.length === 0,
+		`${BOARD}: ${problems(settled?.board) || 'no problems'}`);
+	// The flavours must not bleed into each other. `machine` is MicroPython's and
+	// exists on every one of its boards, so a CircuitPython target resolving it
+	// means a MicroPython layer is still live.
+	record('a CircuitPython board does not resolve MicroPython\'s modules', (settled?.micropython.length ?? 0) > 0,
+		`${MACHINE}: ${problems(settled?.micropython) || 'resolved, so the flavours are bleeding into each other'}`);
+
+	// The board's own layer, which is one file: the base ships a pin-less
+	// placeholder for `board` and the overlay replaces it. Completion rather than
+	// hover, because the pins are what a user reaches for and an empty list is
+	// exactly what the placeholder would give.
+	// Probed on a pin that appears nowhere in the workspace. `GP0` is written on
+	// the bench line itself, so VS Code's word-based suggestions offer it whether
+	// or not a server is running, and asserting on it would pass against an empty
+	// board module.
+	const pins = await waitFor(() => bench.completeAfter(PIN, 'board.'), (items) => items.includes(UNWRITTEN_PIN), 30_000);
+	record('the board layer carries that board\'s own pins', (pins ?? []).includes(UNWRITTEN_PIN),
+		`completion after "board.": ${pins?.length ?? 0} item(s)${pins?.length ? `, e.g. ${pins.slice(0, 4).join(', ')}` : ''}`);
+
+	// The phase, in one assertion: same base, same layer format, and the board
+	// without a radio does not get one.
+	await setTarget('circuitpython/raspberry_pi_pico');
+	const filtered = await waitFor(
+		async () => ({ radio: await bench.unresolved(WIFI), board: await bench.unresolved(BOARD) }),
+		(state) => state.radio.length > 0 && state.board.length === 0,
+		60_000
+	);
+	record('a board with no radio does not resolve wifi', (filtered?.radio.length ?? 0) > 0,
+		`${WIFI} on a Pico: ${problems(filtered?.radio) || 'resolved, so the allowlist did not filter the shared base'}`);
+	record('and keeps everything its own board list names', filtered?.board.length === 0,
+		`${BOARD} on a Pico: ${problems(filtered?.board) || 'no problems'}`);
+}
+
 /** Bench lines these checks ask about, matched from the start of the line. */
 const SYS = 'import sys';
 const MICROBIT = 'from microbit import';
@@ -656,6 +719,16 @@ const MACHINE = 'import machine';
 const ESP32 = 'import esp32';
 const RP2 = 'import rp2';
 const SHED_PROBE = 'sys.print_exception(';
+const BOARD = 'import board';
+const WIFI = 'import wifi';
+const PIN = 'pin = board.';
+
+/**
+ * A pin on the Pico W that is written nowhere in the bench, so only the board's
+ * own stub can offer it. CLAUDE.md: a completion list is never evidence on its
+ * own, since a dead server still yields word-based items from the document.
+ */
+const UNWRITTEN_PIN = 'A0';
 
 /**
  * A type that only resolves if the standard library's helper package was moved
@@ -694,6 +767,23 @@ async function openImports(root: vscode.Uri) {
 		hoverOn: (start: string, symbol: string) => {
 			const line = lineOf(start);
 			return hoverAt(uri, line, doc.lineAt(line).text.indexOf(symbol));
+		},
+		/**
+		 * What completion offers just after `upTo` on a line, by label.
+		 *
+		 * The one question hover cannot answer: a module that resolves to an empty
+		 * placeholder hovers exactly like one carrying a board's pins.
+		 */
+		completeAfter: async (start: string, upTo: string) => {
+			const line = lineOf(start);
+			const at = doc.lineAt(line).text.indexOf(upTo);
+			assert(at >= 0, `test/workspace/main.py line "${start}" no longer contains "${upTo}"`);
+			const list = await vscode.commands.executeCommand<vscode.CompletionList>(
+				'vscode.executeCompletionItemProvider',
+				uri,
+				new vscode.Position(line, at + upTo.length)
+			);
+			return (list?.items ?? []).map((item) => (typeof item.label === 'string' ? item.label : item.label.label));
 		},
 	};
 }

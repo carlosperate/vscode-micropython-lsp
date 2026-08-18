@@ -2,13 +2,24 @@ import { describe, expect, it } from 'vitest';
 
 import {
 	assertDisjoint,
+	assertEveryBoard,
 	assertUniqueIds,
+	boardInclude,
 	boardLayer,
+	circuitpythonBoardLayer,
+	circuitpythonTarget,
 	genericTarget,
+	importsOf,
+	keepModules,
 	micropythonTarget,
+	missingFromBase,
+	modulesOf,
 	orderTargets,
+	parseBoardStub,
+	sdistRoots,
 	splitDevice,
 	targetEnum,
+	unfilterableModules,
 	toLayer,
 	wheelRoots,
 } from '../stubs/assemble.mjs';
@@ -190,9 +201,216 @@ describe('genericTarget', () => {
 
 	it('shares the layers of the board it duplicates, so it costs no bytes', () => {
 		// Upstream's `micropython-<port>-stubs` ships the same stubs as that port's
-		// flagship board, which `npm run check:micropythonpackages` verifies. Writing
+		// flagship board, which `npm run stubs:check` verifies. Writing
 		// a second copy under the generic name would be half a megabyte for nothing.
 		expect(genericTarget(entry, pico).layers).toEqual(micropythonTarget(pico).layers);
+	});
+});
+
+describe('sdistRoots', () => {
+	const sdist = tree([
+		['board/__init__.pyi', 'x'],
+		['ulab/numpy/__init__.pyi', 'x'],
+		['board_definitions/raspberry_pi_pico/__init__.pyi', 'x'],
+		['circuitpython_setboard/__init__.py', 'x'],
+		['circuitpython_stubs.egg-info/PKG-INFO', 'x'],
+		['setup.py', 'x'],
+		['README.rst', 'x'],
+	]);
+
+	it('names every directory holding stubs, and nothing else', () => {
+		// 124 modules and upstream adds one most releases, so this is derived rather
+		// than listed. Holding a `.pyi` is what separates a module from packaging.
+		expect(sdistRoots(sdist)).toEqual(['board/', 'ulab/']);
+	});
+
+	it('leaves the board definitions out, since they are targets rather than modules', () => {
+		expect(sdistRoots(sdist)).not.toContain('board_definitions/');
+	});
+});
+
+describe('parseBoardStub', () => {
+	const stub = [
+		'"""',
+		'Board stub for Raspberry Pi Pico W',
+		' - port: raspberrypi',
+		' - board_id: raspberry_pi_pico_w',
+		' - NVM size: 4096',
+		' - Included modules: _bleio, _bleio (HCI co-processor), board, busio, busio.SPI, os,' +
+			' os.getenv, socketpool, socketpool.socketpool.AF_INET6, wifi',
+		' - Frozen libraries: ',
+		'"""',
+		'GP0: microcontroller.Pin',
+	].join('\n');
+
+	it('reads what the board says about itself', () => {
+		const board = parseBoardStub(stub);
+		expect(board.name).toBe('Raspberry Pi Pico W');
+		expect(board.port).toBe('raspberrypi');
+		expect(board.id).toBe('raspberry_pi_pico_w');
+	});
+
+	it('collapses the qualified and dotted forms onto the module', () => {
+		// `_bleio (HCI co-processor)` says how a module is implemented and
+		// `busio.SPI` names one of its members. Neither is something an import line
+		// can spell, and the allowlist acts on modules.
+		expect(parseBoardStub(stub).modules).toEqual(['_bleio', 'board', 'busio', 'os', 'socketpool', 'wifi']);
+	});
+
+	it('refuses a definition with no generated docstring', () => {
+		// The docstring is the only per-board data there is. Without it the board
+		// would take an empty allowlist, which filters the standard library away and
+		// leaves a target that resolves nothing at all.
+		expect(() => parseBoardStub('GP0: microcontroller.Pin\n')).toThrow(/docstring/);
+		expect(() => parseBoardStub('"""\nBoard stub for X\n - port: p\n - board_id: x\n"""')).toThrow(/docstring/);
+	});
+});
+
+describe('assertEveryBoard', () => {
+	const sdist = tree([
+		['board_definitions/raspberry_pi_pico/__init__.pyi', 'x'],
+		['board_definitions/adafruit_feather/__init__.pyi', 'x'],
+	]);
+
+	it('passes when every board directory produced a target', () => {
+		expect(() => assertEveryBoard(sdist, [{ id: 'raspberry_pi_pico' }, { id: 'adafruit_feather' }])).not.toThrow();
+	});
+
+	it('refuses to ship a catalogue that quietly lost a board', () => {
+		// 627 looks exactly like 628. Two definitions really do arrive with a
+		// truncated name unless the tar reader honours pax headers, and the filter
+		// that misses one leaves no other trace.
+		expect(() => assertEveryBoard(sdist, [{ id: 'raspberry_pi_pico' }])).toThrow(/No target for: adafruit_feather/);
+	});
+
+	it('names the board rather than counting, so a shared id cannot hide', () => {
+		// Two definitions declaring one `board_id` keep the count right while one
+		// layer file overwrites the other.
+		const twins = [{ id: 'raspberry_pi_pico' }, { id: 'raspberry_pi_pico' }];
+		expect(() => assertEveryBoard(sdist, twins)).toThrow(/No target for: adafruit_feather/);
+	});
+});
+
+describe('circuitpythonTarget', () => {
+	const board = { id: 'raspberry_pi_pico_w', name: 'Raspberry Pi Pico W', port: 'raspberrypi' };
+
+	it('names the board and the flavour it belongs to', () => {
+		// Twelve display names are shared by more than one board upstream, so the id
+		// in the description is the only thing telling two rows apart.
+		const target = circuitpythonTarget(board, '10.2.1');
+		expect(target.id).toBe('circuitpython/raspberry_pi_pico_w');
+		expect(target.label).toBe('CircuitPython: Raspberry Pi Pico W');
+		expect(target.description).toBe('circuitpython/raspberry_pi_pico_w (CircuitPython 10.2)');
+		expect(target.group).toBe('raspberrypi');
+	});
+
+	it('merges the shared base under the board overlay it names', () => {
+		expect(circuitpythonTarget(board, '10.2.1').layers).toEqual([
+			'circuitpython/stdlib.json',
+			circuitpythonBoardLayer(board.id),
+		]);
+		expect(circuitpythonBoardLayer('raspberry_pi_pico_w')).toBe('circuitpython/boards/raspberry_pi_pico_w.json');
+	});
+});
+
+describe('keepModules', () => {
+	const layer = {
+		files: {
+			'stdlib/VERSIONS': 'v',
+			'stdlib/builtins.pyi': 'b',
+			'stdlib/wifi/__init__.pyi': 'w',
+			'stdlib/asyncio/__init__.pyi': 'a',
+			'stdlib/asyncio/readme.md': 'r',
+			'stubs/mypy-extensions/mypy_extensions.pyi': 'm',
+		},
+	};
+
+	it('keeps the modules named and drops the rest, whole packages at a time', () => {
+		// A module's package is all of it: leaving a stray readme behind would put a
+		// declined module's folder in the seed with nothing in it.
+		expect(Object.keys(keepModules(layer, ['builtins', 'wifi']).files)).toEqual([
+			'stdlib/VERSIONS',
+			'stdlib/builtins.pyi',
+			'stdlib/wifi/__init__.pyi',
+			'stubs/mypy-extensions/mypy_extensions.pyi',
+		]);
+	});
+
+	it('keeps what belongs to no module at all', () => {
+		// `VERSIONS` gates every module and belongs to none, so a filter that named
+		// only modules would drop the standard library along with it.
+		expect(Object.keys(keepModules(layer, []).files)).toEqual([
+			'stdlib/VERSIONS',
+			'stubs/mypy-extensions/mypy_extensions.pyi',
+		]);
+	});
+
+	it('reports the modules a layer holds', () => {
+		expect([...modulesOf(layer)].sort()).toEqual(['asyncio', 'builtins', 'wifi']);
+	});
+});
+
+describe('unfilterableModules', () => {
+	const borrowed = { files: { 'stdlib/builtins.pyi': 'from io import FileIO as FileIO\n', 'stdlib/io/__init__.pyi': '' } };
+	const natives = { files: { 'stdlib/wifi/__init__.pyi': '', 'stdlib/dualbank/__init__.pyi': '' } };
+
+	it('never lets a board filter the half borrowed from MicroPython', () => {
+		// No `CIRCUITPY_*` flag exists for what CircuitPython inherits, so a board
+		// naming `wifi` and not `io` is not a board without `io`. Filtering it there
+		// left `builtins` importing a module that was gone and `open()` returning
+		// `Unknown` on 88 of the 628 boards, with nothing reported anywhere.
+		const unfilterable = unfilterableModules(borrowed, natives, new Set(['wifi']));
+		expect([...unfilterable].sort()).toEqual(['builtins', 'dualbank', 'io']);
+	});
+
+	it('still lets a board filter the firmware modules it does not have', () => {
+		// The whole feature: `wifi` is documented by some board, so it stays
+		// filterable and a board without a radio does not resolve it.
+		expect(unfilterableModules(borrowed, natives, new Set(['wifi']))).not.toContain('wifi');
+	});
+});
+
+describe('importsOf', () => {
+	it('names the top-level module of either import form', () => {
+		expect([...importsOf('import busio\nfrom microcontroller.pin import X\n')].sort()).toEqual(['busio', 'microcontroller']);
+	});
+
+	it('is what keeps a board stub from importing what its own list drops', () => {
+		// One board of the 628 types its pins `busio.*` while its docstring never
+		// mentions `busio`, so the base's copy was filtered out from under it.
+		expect(boardInclude(['board', ...importsOf('import busio\nGP0: busio.SPI\n')], new Set())).toEqual(['board', 'busio']);
+	});
+});
+
+describe('boardInclude', () => {
+	it('adds what no board can filter to what this board documents', () => {
+		// The board matrix only sees modules with a build flag behind them, so the
+		// type-checker plumbing is named by nobody and has to survive every filter.
+		expect(boardInclude(['wifi', 'board'], new Set(['typing', 'builtins']))).toEqual([
+			'board',
+			'builtins',
+			'typing',
+			'wifi',
+		]);
+	});
+
+	it('says each module once', () => {
+		expect(boardInclude(['wifi', 'typing'], new Set(['typing']))).toEqual(['typing', 'wifi']);
+	});
+});
+
+describe('missingFromBase', () => {
+	const base = { files: { 'stdlib/VERSIONS': 'v', 'stdlib/wifi/__init__.pyi': 'w' } };
+
+	it('passes when every documented module has a stub behind it', () => {
+		expect(missingFromBase(base, new Set(['wifi']))).toEqual([]);
+	});
+
+	it('names what the boards ask for and neither upstream ships', () => {
+		// The reconciliation between two projects that do not know about each other.
+		// A board documenting a module nothing carries just offers less than it says,
+		// with nothing to notice it.
+		expect(missingFromBase(base, new Set(['wifi', 'espnow']))).toEqual(['espnow']);
 	});
 });
 

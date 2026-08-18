@@ -23,6 +23,12 @@ const BLOCK = 512;
 /** Typeflags that carry file content. A NUL is what older writers leave for a plain file. */
 const FILE_TYPES = new Set(['0', '\0']);
 
+/** A pax extended header: metadata for the entry that follows it, not a file. */
+const PAX_TYPE = 'x';
+
+/** GNU tar's older way of carrying a long path: the name, as a body. */
+const LONG_NAME_TYPE = 'L';
+
 /**
  * Read whichever archive format a source ships as.
  *
@@ -31,13 +37,23 @@ const FILE_TYPES = new Set(['0', '\0']);
  * `.../tar.gz/refs/tags/v0.4.0`. An unknown format throws rather than being
  * guessed at, so a source we cannot read fails by name.
  *
+ * `raw` is a source that is one file rather than a tree, which is how a licence
+ * gets pinned when its package ships none: `circuitpython-stubs` declares MIT
+ * and carries no text, so the only copy is in Adafruit's repository. It arrives
+ * as a one-entry tree, so nothing downstream needs a special case.
+ *
  * @param {Buffer} buffer
  * @param {string} format
+ * @param {string} [name] path a `raw` source's single file takes in the tree
  * @returns {Map<string, Buffer>}
  */
-export function extractArchive(buffer, format) {
+export function extractArchive(buffer, format, name) {
 	if (format === 'tar.gz') return extractTarGz(buffer);
 	if (format === 'zip') return extractZip(buffer);
+	if (format === 'raw') {
+		if (!name) throw new Error('a "raw" source needs a name to file its one entry under');
+		return new Map([[name, buffer]]);
+	}
 	throw new Error(`unsupported archive format "${format}"`);
 }
 
@@ -60,6 +76,8 @@ export function extractTarGz(gzipped) {
  */
 export function extractTar(tar) {
 	const files = new Map();
+	/** A `path` a pax header set for the entry that follows it, used once. */
+	let override;
 
 	for (let offset = 0; offset + BLOCK <= tar.length; ) {
 		const head = tar.subarray(offset, offset + BLOCK);
@@ -70,7 +88,7 @@ export function extractTar(tar) {
 		// A path over 100 characters is split across two fields, so reading the
 		// name alone silently loses files from any deep tree.
 		const prefix = field(head, 345, 155);
-		const path = prefix ? `${prefix}/${name}` : name;
+		const path = override ?? (prefix ? `${prefix}/${name}` : name);
 		const type = String.fromCharCode(head[156]);
 
 		// Validated rather than trusted: a non-octal size parses to NaN, every
@@ -88,10 +106,32 @@ export function extractTar(tar) {
 		}
 
 		if (FILE_TYPES.has(type)) files.set(path, tar.subarray(offset, offset + size));
+		// Either header describes the entry after it and nothing else, so the name
+		// is taken once and any other entry clears it.
+		override = longPath(type, tar.subarray(offset, offset + size));
 		offset += Math.ceil(size / BLOCK) * BLOCK;
 	}
 
 	return files;
+}
+
+/**
+ * The path a header carries for the entry after it, when it is one of the two
+ * headers that exist to carry one.
+ *
+ * Both matter because the name field truncates at 100 characters, and reading
+ * that alone turns `__init__.pyi` into `__init__.py`. Python's `tarfile` writes
+ * pax, which is how `circuitpython-stubs` ships two of its board definitions;
+ * `tar czf` still defaults to GNU, so both are read rather than the one we
+ * happen to meet today.
+ *
+ * A pax header is a list of `<length> <key>=<value>\n` records. A GNU one is the
+ * name on its own, NUL terminated.
+ */
+function longPath(type, block) {
+	if (type === LONG_NAME_TYPE) return field(block, 0, block.length) || undefined;
+	if (type !== PAX_TYPE) return undefined;
+	return /(?:^|\n)\d+ path=(.*)\n/.exec(block.toString('utf8'))?.[1];
 }
 
 /**

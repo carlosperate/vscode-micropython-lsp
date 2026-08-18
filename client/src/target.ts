@@ -62,6 +62,15 @@ export interface Catalogue {
 export interface Layer {
 	/** Paths relative to the typeshed root, mapped to file content. */
 	readonly files: Readonly<Record<string, string>>;
+	/**
+	 * Standard-library modules this layer keeps from everything merged before it,
+	 * by top-level name. Absent means keep all of them.
+	 *
+	 * The *effective* allowlist, not a board's module list: a board documents
+	 * `wifi` and says nothing about `typing`, so reconciling the two is the
+	 * build's job. It only ever removes, and only from the layers underneath.
+	 */
+	readonly include?: readonly string[];
 }
 
 /** Reads one stub asset, addressed from the folder the catalogue lives in. */
@@ -116,15 +125,56 @@ async function readAsset<T>(read: ReadStub, path: string, parse: (text: string) 
  *
  * Later layers win a collision; the build is where an unexpected one is caught,
  * since by here there is nothing useful left to say about it.
+ *
+ * A layer's `include` narrows what is underneath it before its own files land.
+ * That order is the whole mechanism: one shared base, and a board keeping only
+ * the modules it was built with, so a board without a radio is one where `wifi`
+ * does not resolve. Pre-composing that per board is 435 MB for CircuitPython.
  */
 export function composeSeed(layers: readonly Layer[], root: string = TARGET_TYPESHED): Record<string, string> {
-	const merged: Record<string, string> = {};
+	let merged: Record<string, string> = {};
 	for (const layer of layers) {
+		if (layer.include) merged = keepModules(merged, layer.include);
 		for (const [path, content] of Object.entries(layer.files)) merged[layerPath(path)] = content;
 	}
 
 	const base = root.endsWith('/') ? root.slice(0, -1) : root;
 	return Object.fromEntries(Object.entries(merged).map(([path, content]) => [`${base}/${path}`, content]));
+}
+
+/**
+ * Everything belonging to one of `include`'s modules, plus everything the
+ * allowlist has no opinion about.
+ *
+ * That second half is how `VERSIONS` survives a filter naming only modules;
+ * dropping it takes the whole standard library with it, and a seed without
+ * `builtins` resolves nothing at all rather than merely lacking a module.
+ */
+function keepModules(files: Record<string, string>, include: readonly string[]): Record<string, string> {
+	const wanted = new Set(include);
+	const kept = Object.entries(files).filter(([path]) => {
+		const module = stdlibModule(path);
+		return module === undefined || wanted.has(module);
+	});
+	return Object.fromEntries(kept);
+}
+
+/**
+ * The module a path belongs to, or nothing when it belongs to none.
+ *
+ * Anything inside a package directory is that package's, whatever its extension.
+ * A bare file at the root counts only if it is a stub, which carries `VERSIONS`
+ * through every allowlist, and nothing outside `stdlib/` answers at all.
+ *
+ * `moduleOf` in `stubs/assemble.mjs` writes the lists with the same rule.
+ */
+function stdlibModule(path: string): string | undefined {
+	const stdlib = 'stdlib/';
+	if (!path.startsWith(stdlib)) return undefined;
+	const relative = path.slice(stdlib.length);
+	const slash = relative.indexOf('/');
+	if (slash !== -1) return relative.slice(0, slash);
+	return relative.endsWith('.pyi') ? relative.slice(0, -'.pyi'.length) : undefined;
 }
 
 export function parseCatalogue(text: string): Catalogue {
@@ -142,6 +192,15 @@ export function parseCatalogue(text: string): Catalogue {
 export function parseLayer(text: string): Layer {
 	const layer = JSON.parse(text) as Layer;
 	if (!layer?.files || typeof layer.files !== 'object') throw new Error('a stub layer has no "files" object');
+	// An allowlist that matches nothing is refused rather than obeyed: it filters
+	// the base down to nothing, and a root with no `builtins.pyi` hovers `Unknown`
+	// everywhere while reporting no error. Failing here reaches the fallback, which
+	// says what broke. A non-string entry matches nothing, so it fails the same way.
+	const include = layer.include;
+	if (include !== undefined && (!Array.isArray(include) || include.length === 0 ||
+		!include.every((module) => typeof module === 'string' && module))) {
+		throw new Error('a stub layer\'s "include" must be a non-empty array of module names');
+	}
 	return layer;
 }
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { comparePackages, latestInSeries, newerReleases, packageOf, publishPrefix } from '../stubs/check.mjs';
+import { comparePackages, latestInSeries, newerRelease, newerReleases, packageOf, publishPrefix } from '../stubs/check.mjs';
 import { readConfig } from '../stubs/fetch.mjs';
 
 describe('publishPrefix', () => {
@@ -105,14 +105,24 @@ describe('the skip list in config.json', () => {
 });
 
 describe('the excluded list in config.json', () => {
-	it('ships only embedded boards, never a port that runs on a computer', async () => {
-		// The desktop and browser ports are published upstream and deliberately left
-		// out, so this is the decision itself rather than a description of the config:
-		// re-adding one has to be a considered edit here, not a quiet line in a bump.
+	it('offers no board for a port that runs on a computer', async () => {
+		// The desktop and browser ports are published upstream and deliberately not
+		// offered, so this is the decision itself rather than a description of the
+		// config: making one selectable has to be a considered edit here, not a quiet
+		// line in a bump.
+		//
+		// Pinning one is a different thing from offering it. CircuitPython documents
+		// six modules that neither it nor MicroPython's shared base ships a stub for,
+		// and the unix port is where MicroPython keeps them, so it is fetched for what
+		// is borrowed out of it and `borrowedBy` keeps it out of the catalogue.
 		const { sources, excluded } = await readConfig();
 		for (const port of ['unix', 'windows', 'webassembly']) {
-			expect(Object.values(sources).map((source) => source.port)).not.toContain(port);
-			expect(excluded[`micropython-${port}`], `${port} unaccounted for`).toBeTruthy();
+			const pinned = Object.entries(sources).filter(([, source]) => source.port === port);
+			for (const [id, source] of pinned) {
+				expect(source.borrowedBy, `${id} is offered as a target`).toBeTruthy();
+				expect(sources[source.borrowedBy], `${id} is borrowed by nothing`).toBeTruthy();
+			}
+			expect(pinned.length || excluded[`micropython-${port}`], `${port} unaccounted for`).toBeTruthy();
 		}
 	});
 
@@ -169,5 +179,27 @@ describe('latestInSeries', () => {
 
 	it('treats a plain release as post 0', () => {
 		expect(latestInSeries(['1.28.0', '1.28.0.post1'], '1.28.0')).toBe('1.28.0.post1');
+	});
+});
+
+describe('newerRelease', () => {
+	it('compares by number, not as text', () => {
+		// `10.2.1` sorts before `9.2.9` as text, and this decides whether an update
+		// is reported at all.
+		expect(newerRelease(['9.2.9', '10.0.0', '10.2.1'], '10.0.0')).toBe('10.2.1');
+	});
+
+	it('says nothing when the pin is the newest', () => {
+		expect(newerRelease(['9.2.9', '10.2.1'], '10.2.1')).toBeUndefined();
+	});
+
+	it('takes a leading v, which is how tags are written', () => {
+		expect(newerRelease(['v0.3.0', 'v0.4.0'], 'v0.4.0')).toBeUndefined();
+		expect(newerRelease(['v0.4.0', 'v0.5.0'], 'v0.4.0')).toBe('v0.5.0');
+	});
+
+	it('ignores anything that is not a release number', () => {
+		// Both repositories tag other things, and a pre-release is not an update.
+		expect(newerRelease(['10.2.1', '11.0.0-beta.1', 'nightly'], '10.2.1')).toBeUndefined();
 	});
 });

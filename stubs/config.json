@@ -171,6 +171,34 @@
 			"format": "zip",
 			"license": "MIT",
 			"sha256": "78e0bb92e0dac35aae77c224ecc44f66c851249f15156b52bf83814ea790771e"
+		},
+		"micropython-unix": {
+			"port": "unix",
+			"label": "Unix port",
+			"borrowedBy": "circuitpython",
+			"description": "Pinned for what CircuitPython borrows from it, and offered as a target by nobody: it runs on a computer rather than an embedded board. CircuitPython documents binascii, errno, gc, heapq, platform and select, and generates a stub for none of them, so they come from the port whose standard library is closest to CPython's.",
+			"url": "https://files.pythonhosted.org/packages/de/86/7d689e7f6aea3479863a1dd1c0d6e0e44db6a8bbab9d13aaf9ac146b1697/micropython_unix_stubs-1.28.0.post1-py2.py3-none-any.whl",
+			"version": "1.28.0.post1",
+			"format": "zip",
+			"license": "MIT",
+			"sha256": "6c05f0eeb7a3fc95f4eebed25f0f8c60cacce4da79b4ca5e7132048ab5d4186f"
+		},
+		"circuitpython": {
+			"description": "CircuitPython's own stubs: the native modules, and one board definition per shipped board. The sdist rather than the wheel, because setup.py strips array, math, os, random, struct, sys, ssl and time from the wheel so they cannot shadow CPython's standard library on a desktop, and those are modules a board really has.",
+			"url": "https://files.pythonhosted.org/packages/49/52/86c580dd46861e6bade8200227f8ada8fec07a94988a62685b668b5dc7bc/circuitpython_stubs-10.2.1.tar.gz",
+			"version": "10.2.1",
+			"format": "tar.gz",
+			"license": "MIT. Neither the sdist nor the wheel carries the text, so it is pinned separately as circuitpython-license below.",
+			"strip": 1,
+			"sha256": "5de36fb7b5aab7e0c0cf3e8b7d83a2a13cc179966467983a6c0551b13ffb17f9"
+		},
+		"circuitpython-license": {
+			"description": "Adafruit's licence text, from the repository at the tag the stubs were built from. A separate pin because the package it belongs to ships no copy of it, and the upstream text is what gets redistributed rather than a summary of it.",
+			"url": "https://raw.githubusercontent.com/adafruit/circuitpython/10.2.1/LICENSE",
+			"version": "10.2.1",
+			"format": "raw",
+			"license": "MIT",
+			"sha256": "f8d44b948113cff390f6454e59069139a92da75227a7b50bb3589499d4b5fe1b"
 		}
 	},
 	"skip": {
@@ -194,7 +222,6 @@
 		}
 	},
 	"excluded": {
-		"micropython-unix": "Runs on a computer, not an embedded board.",
 		"micropython-webassembly": "Runs in a browser, not an embedded board.",
 		"micropython-windows": "Runs on a computer, not an embedded board."
 	}

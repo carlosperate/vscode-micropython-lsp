@@ -51,6 +51,40 @@ export const MICROPYTHON_BASE = 'micropython-stdlib';
 /** Where that base is written, and what every MicroPython target names first. */
 const MICROPYTHON_BASE_LAYER = 'micropython/stdlib.json';
 
+/** The config keys CircuitPython is built from: its own stubs, and what it borrows. */
+export const CIRCUITPYTHON = 'circuitpython';
+export const CIRCUITPYTHON_LICENCE = 'circuitpython-license';
+const UNIX_PORT = 'micropython-unix';
+
+/** The config key of the micro:bit Foundation's stubs. */
+export const MICROBIT = 'microbit';
+
+/** Where the CircuitPython base is written, and what every board names first. */
+const CIRCUITPYTHON_BASE_LAYER = 'circuitpython/stdlib.json';
+
+/** The subtree of the sdist that is one board each, rather than a module. */
+const BOARD_DEFINITIONS = 'board_definitions/';
+
+/** One board's definition: the generated stub inside a package of its own. */
+const BOARD_STUB = new RegExp(`^${BOARD_DEFINITIONS}[^/]+/__init__\\.pyi?$`);
+
+/**
+ * The modules CircuitPython documents but neither it nor MicroPython's shared
+ * base ships a stub for. MicroPython keeps them in its port stubs, so the unix
+ * port supplies them.
+ *
+ * Hand-written against a pinned upstream, like micro:bit's device list;
+ * `checkInheritedModules` in `check.mjs` is what notices when it stops being
+ * right, and the build fails if one of them is missing.
+ *
+ * `asyncio` is borrowed the same way and deliberately reaches every board:
+ * CircuitPython ships it as a library rather than firmware, so no board
+ * definition names it, and squiggling it would flag working code on any board
+ * whose owner installed it. `circup` installs `.mpy` bytecode by default, which
+ * pyright cannot read at all, so the real choice is this stub or no types.
+ */
+const CIRCUITPYTHON_FROM_UNIX = ['binascii', 'errno', 'gc', 'heapq', 'platform', 'select'];
+
 /**
  * How the MicroPython wheels are rearranged into one typeshed root.
  *
@@ -101,6 +135,15 @@ export function toLayer(tree, moves) {
 	const paths = Object.keys(files).sort();
 	return { files: Object.fromEntries(paths.map((key) => [key, files[key]])) };
 }
+
+/**
+ * A tree's top-level roots lifted into `stdlib/`, which is where the engine's
+ * only import root looks. Wheels and the sdist alike ship their stubs flat.
+ *
+ * @param {Map<string, Buffer>} tree
+ * @param {string[]} roots prefixes to move, from `wheelRoots` or `sdistRoots`
+ */
+const stdlibLayer = (tree, roots) => toLayer(tree, roots.map((root) => ({ from: root, to: `stdlib/${root}` })));
 
 /**
  * Every top-level entry of a wheel apart from its packaging metadata.
@@ -197,6 +240,182 @@ export function genericTarget(entry, source) {
 }
 
 /**
+ * Every top-level directory of the sdist that holds stubs, board definitions
+ * aside. Derived rather than listed: it is 124 modules and upstream adds one
+ * most releases.
+ *
+ * Holding a `.pyi` is what separates a module from the packaging around it
+ * (`circuitpython_setboard/` is Python we do not ship, `.egg-info/` carries a
+ * version in its name).
+ *
+ * @param {Map<string, Buffer>} tree
+ * @returns {string[]} prefixes, each with its trailing slash
+ */
+export function sdistRoots(tree) {
+	const roots = new Set();
+	for (const key of tree.keys()) {
+		const slash = key.indexOf('/');
+		if (slash === -1 || !key.endsWith('.pyi')) continue;
+		const root = `${key.slice(0, slash)}/`;
+		if (root !== BOARD_DEFINITIONS) roots.add(root);
+	}
+	return [...roots].sort();
+}
+
+/**
+ * What one board definition says about itself, from the docstring upstream
+ * generates at the top of it. The module list is the whole of per-board
+ * filtering, machine-written from the `CIRCUITPY_*` flags that build the
+ * firmware.
+ *
+ * Two of its forms are not module names: `_bleio (HCI co-processor)` says how a
+ * module is implemented, `busio.SPI` names a member of one. Both collapse onto
+ * the module, which is what an `import` line spells.
+ *
+ * @param {string} text the stub's source
+ * @returns {{name: string, port: string, id: string, modules: string[]}}
+ */
+export function parseBoardStub(text) {
+	const field = (label) => new RegExp(`^\\s*-\\s*${label}:\\s*(.+)$`, 'm').exec(text)?.[1]?.trim();
+	const name = /Board stub for (.+)/.exec(text)?.[1]?.trim();
+	const port = field('port');
+	const id = field('board_id');
+	const listed = field('Included modules');
+	if (!name || !port || !id || !listed) {
+		throw new Error('a board definition is missing its generated docstring, so it has no module list');
+	}
+
+	const modules = listed
+		.split(',')
+		.map((entry) => entry.trim().split(' ')[0].split('.')[0])
+		.filter(Boolean);
+	return { name, port, id, modules: [...new Set(modules)].sort() };
+}
+
+/** Where a CircuitPython board's overlay is written, and what its target names. */
+export const circuitpythonBoardLayer = (id) => `circuitpython/boards/${id}.json`;
+
+/**
+ * One CircuitPython board's catalogue entry.
+ *
+ * The label leads with the flavour because the same board ships for both, and
+ * the description carries the board id because twelve display names are shared
+ * by more than one board upstream: the id is the only thing telling `edgebadge`
+ * from `pybadge` when both read "Adafruit Pybadge".
+ */
+export function circuitpythonTarget(board, version) {
+	const id = `circuitpython/${board.id}`;
+	return {
+		id,
+		label: `CircuitPython: ${board.name}`,
+		description: `${id} (CircuitPython ${version.split('.').slice(0, 2).join('.')})`,
+		group: board.port,
+		layers: [CIRCUITPYTHON_BASE_LAYER, circuitpythonBoardLayer(board.id)],
+	};
+}
+
+/**
+ * A layer narrowed to the modules named, the same rule the client applies to an
+ * `include` at load time. Anything belonging to no module keeps its place, which
+ * is what carries `VERSIONS` through.
+ *
+ * @param {{files: Record<string, string>}} layer
+ * @param {readonly string[]} modules
+ */
+export function keepModules(layer, modules) {
+	const wanted = new Set(modules);
+	const kept = Object.entries(layer.files).filter(([path]) => {
+		const module = moduleOf(path);
+		return module === undefined || wanted.has(module);
+	});
+	return { files: Object.fromEntries(kept) };
+}
+
+/**
+ * Top-level modules a stub imports. `import x.y` and `from x.y import z` both
+ * name `x`, which is what an allowlist can act on.
+ *
+ * @param {string} text a stub's source
+ * @returns {Set<string>}
+ */
+export function importsOf(text) {
+	const found = new Set();
+	for (const line of text.split('\n')) {
+		const match = /^\s*(?:from\s+([A-Za-z_][\w.]*)\s+import|import\s+([A-Za-z_][\w.]*))/.exec(line);
+		const name = (match?.[1] ?? match?.[2])?.split('.')[0];
+		if (name) found.add(name);
+	}
+	return found;
+}
+
+/**
+ * The modules a board's list has no authority over, and so may never remove.
+ *
+ * **The borrowed half is not per-board data.** A `CIRCUITPY_*` flag exists for
+ * what CircuitPython compiles, and for nothing it inherits, so no board
+ * definition describes `io`, `re` or `builtins` even though every board has
+ * them. Filtering them on a board that happens not to list one is not a smaller
+ * standard library, it is a broken one: `builtins` imports `io`, so `open()`
+ * returned `Unknown` on the 88 boards that did not name it, and `typing` imports
+ * `re`. Nothing errors, the types simply go quiet.
+ *
+ * Natives no board mentions join them, which is the older half of this rule:
+ * they are real firmware modules the matrix cannot see either.
+ *
+ * @param {{files: Record<string, string>}} borrowed MicroPython's stubs
+ * @param {{files: Record<string, string>}} natives CircuitPython's own
+ * @param {ReadonlySet<string>} documented every module named by any board
+ */
+export function unfilterableModules(borrowed, natives, documented) {
+	const unmentioned = [...modulesOf(natives)].filter((module) => !documented.has(module));
+	return new Set([...modulesOf(borrowed), ...unmentioned]);
+}
+
+/** Every module a layer holds a stub for. */
+export function modulesOf(layer) {
+	const modules = new Set();
+	for (const path of Object.keys(layer.files)) {
+		const module = moduleOf(path);
+		if (module !== undefined) modules.add(module);
+	}
+	return modules;
+}
+
+/**
+ * A board's effective allowlist: what it documents, plus what its list has no
+ * authority over.
+ *
+ * **You can only filter what the per-board data can see.** Keeping a native the
+ * matrix never mentions offers `dualbank` to a board without one; the
+ * alternative hides `micropython`, and `from micropython import const` is
+ * everyday CircuitPython. The cheaper mistake wins.
+ *
+ * What stays filtered is a module the board really lacks, even where another
+ * kept stub names it: `displayio` types a union member `picodvi`, and offering
+ * HDMI to a board with none costs more than that member reading `Unknown`.
+ *
+ * @param {readonly string[]} documented one board's module list
+ * @param {ReadonlySet<string>} unfilterable from `unfilterableModules`
+ */
+export function boardInclude(documented, unfilterable) {
+	return [...new Set([...documented, ...unfilterable])].sort();
+}
+
+/**
+ * Every module the boards ask for that nothing in the base answers: the
+ * reconciliation between two upstreams that do not know about each other. A name
+ * in neither is one upstream started shipping and we do not carry, which would
+ * otherwise be a board silently offering less than it says.
+ *
+ * @param {{files: Record<string, string>}} base
+ * @param {ReadonlySet<string>} documented every module named by any board
+ */
+export function missingFromBase(base, documented) {
+	const have = modulesOf(base);
+	return [...documented].filter((module) => !have.has(module)).sort();
+}
+
+/**
  * No two targets may answer to the same id.
  *
  * The ids become the `enum` of the Settings dropdown, and VS Code resolves the
@@ -285,12 +504,23 @@ export function targetEnum(catalogue) {
 	};
 }
 
-/** The first path segment under `stdlib/`, which is the module a stub belongs to. */
+/**
+ * The module a path belongs to, or nothing when it belongs to none.
+ *
+ * Anything inside a package directory is that package's, whatever its extension:
+ * `asyncio/readme.md` travels with `asyncio`, so declining a module leaves
+ * nothing of it behind. A bare file at the root counts only if it is a stub,
+ * which keeps `VERSIONS` out of every allowlist and every split.
+ *
+ * `stdlibModule` in `target.ts` is the same rule at load time: two copies in two
+ * languages, one writing the lists and one reading them, each with its own test.
+ */
 function moduleOf(key) {
-	if (!key.endsWith('.pyi')) return undefined;
-	const relative = key.startsWith('stdlib/') ? key.slice('stdlib/'.length) : key;
-	const first = relative.split('/')[0];
-	return first.endsWith('.pyi') ? first.slice(0, -'.pyi'.length) : first;
+	if (!key.startsWith('stdlib/')) return undefined;
+	const relative = key.slice('stdlib/'.length);
+	const slash = relative.indexOf('/');
+	if (slash !== -1) return relative.slice(0, slash);
+	return relative.endsWith('.pyi') ? relative.slice(0, -'.pyi'.length) : undefined;
 }
 
 export async function assembleStubs() {
@@ -301,6 +531,7 @@ export async function assembleStubs() {
 	const targets = orderTargets([
 		...(await assembleMicroPython(sources, skip)),
 		...(await assembleMicrobit(sources.microbit)),
+		...(await assembleCircuitPython(sources)),
 	]);
 	assertUniqueIds(targets);
 
@@ -332,11 +563,14 @@ async function assembleMicroPython(sources, skip) {
 		},
 	];
 
-	const boards = Object.entries(sources).filter(([, entry]) => entry.port);
+	// `borrowedBy` is a port pinned for what another flavour takes from it rather
+	// than to be offered: the unix port's standard library is CircuitPython's
+	// closest source for six modules, and it runs on a computer.
+	const boards = Object.entries(sources).filter(([, entry]) => entry.port && !entry.borrowedBy);
 	let shared;
 	for (const [id, board] of boards) {
 		const wheel = await cachedTree(id, board);
-		const overlay = toLayer(wheel, wheelRoots(wheel).map((root) => ({ from: root, to: `stdlib/${root}` })));
+		const overlay = stdlibLayer(wheel, wheelRoots(wheel));
 		const target = micropythonTarget(board);
 		assertDisjoint(base, overlay, target.id);
 		await write(boardLayer(board), overlay);
@@ -372,7 +606,7 @@ async function assembleMicroPython(sources, skip) {
  * standard library.
  */
 async function assembleMicrobit(source) {
-	const tree = await cachedTree('microbit', source);
+	const tree = await cachedTree(MICROBIT, source);
 	const { base, device } = splitDevice(toLayer(tree, [{ from: source.typeshed, to: '' }]), MICROBIT_DEVICE);
 
 	await write('microbit/base.json', base);
@@ -398,6 +632,156 @@ async function assembleMicrobit(source) {
 			layers: ['microbit/base.json', 'microbit/device.json'],
 		},
 	];
+}
+
+/**
+ * CircuitPython: one base of native modules, and one layer per board carrying
+ * that board's pins and the modules its firmware was built with.
+ *
+ * The base is two upstreams. CircuitPython generates stubs for the 124 modules
+ * it implements itself and no standard library at all: no `builtins`, no
+ * `typing`, no `sys`. Those it inherits from MicroPython in source as well as in
+ * documentation, so they are borrowed from MicroPython's stubs. What
+ * CircuitPython does generate always wins, being extracted from the C it ships.
+ */
+async function assembleCircuitPython(sources) {
+	const source = sources[CIRCUITPYTHON];
+	const sdist = await cachedTree(CIRCUITPYTHON, source);
+	const natives = stdlibLayer(sdist, sdistRoots(sdist));
+	assertGeneratedStdlib(natives);
+
+	// Read once and used twice, for the stubs and for the licence beside them: it
+	// is the largest wheel we carry and unzipping it is not free.
+	const micropython = await cachedTree(MICROPYTHON_BASE, sources[MICROPYTHON_BASE]);
+	const borrowed = await borrowedStdlib(sources, natives, micropython);
+	assertDisjoint(borrowed, natives, CIRCUITPYTHON);
+	const base = { files: { ...borrowed.files, ...natives.files } };
+	await write(CIRCUITPYTHON_BASE_LAYER, base);
+	await writeRaw('circuitpython/LICENSE.md', (await cachedTree(CIRCUITPYTHON_LICENCE, sources[CIRCUITPYTHON_LICENCE])).get('LICENSE'));
+	// The borrowed half travels under its own licence, a different file by a
+	// different author, so both ship.
+	await writeRaw('circuitpython/LICENSE-micropython-stubs.md', wheelLicence(micropython));
+
+	const boards = [...sdist]
+		.filter(([path]) => BOARD_STUB.test(path))
+		.map(([, content]) => {
+			const stub = content.toString('utf8');
+			return { stub, ...parseBoardStub(stub) };
+		});
+	assertEveryBoard(sdist, boards);
+
+	const documented = new Set(boards.flatMap((board) => board.modules));
+	const missing = missingFromBase(base, documented);
+	if (missing.length) {
+		throw new Error(
+			`${missing.length} module(s) the boards document have no stub in either upstream: ${missing.join(', ')}`
+		);
+	}
+	const unfilterable = unfilterableModules(borrowed, natives, documented);
+
+	const targets = [];
+	for (const board of boards) {
+		// The one sanctioned collision, and the reason `include` filters before a
+		// layer's own files land: this replaces the base's pin-less placeholder with
+		// the board's real pins, which is what `circuitpython_setboard` does too.
+		// Its own imports join the list, since one board types its pins `busio.*`
+		// while its docstring never mentions `busio`.
+		const include = boardInclude([...board.modules, ...importsOf(board.stub)], unfilterable);
+		const layer = { files: { 'stdlib/board/__init__.pyi': board.stub }, include };
+		await write(circuitpythonBoardLayer(board.id), layer);
+		targets.push(circuitpythonTarget(board, source.version));
+	}
+
+	console.log(
+		`[stubs] circuitpython: ${Object.keys(natives.files).length} generated files` +
+			` + ${Object.keys(base.files).length - Object.keys(natives.files).length} borrowed` +
+			` + ${boards.length} boards, ${unfilterable.size} module(s) no board filters`
+	);
+	return targets;
+}
+
+/**
+ * The standard library CircuitPython documents and does not generate, taken
+ * from MicroPython's stubs.
+ *
+ * Mostly derived rather than listed: everything MicroPython's shared base has
+ * that CircuitPython does not ship itself, plus the six from the unix port.
+ *
+ * Only `stdlib/` travels. MicroPython's separate `stubs/` import root stays
+ * behind: its one package is imported by nothing, and the engine resolves from a
+ * single root anyway.
+ */
+async function borrowedStdlib(sources, natives, micropython) {
+	const shared = toLayer(micropython, MICROPYTHON_BASE_MOVES);
+	const stdlib = { files: Object.fromEntries(Object.entries(shared.files).filter(([path]) => path.startsWith('stdlib/'))) };
+
+	const ours = modulesOf(natives);
+	const wanted = [...modulesOf(stdlib)].filter((module) => !ours.has(module));
+
+	const wheel = await cachedTree(UNIX_PORT, sources[UNIX_PORT]);
+	const inherited = keepModules(stdlibLayer(wheel, wheelRoots(wheel)), CIRCUITPYTHON_FROM_UNIX);
+	// A third licence, because this is a third package: same author and the same
+	// MIT terms as the shared base, a different file under a different copyright
+	// year. Six modules of what ships come from here.
+	await writeRaw('circuitpython/LICENSE-micropython-unix-stubs.md', wheelLicence(wheel));
+	const absent = CIRCUITPYTHON_FROM_UNIX.filter((module) => !modulesOf(inherited).has(module));
+	if (absent.length) {
+		throw new Error(`the unix port no longer ships ${absent.join(', ')}, which CircuitPython documents`);
+	}
+
+	const borrowed = keepModules(stdlib, wanted);
+	assertDisjoint(borrowed, inherited, 'the unix port');
+	return { files: { ...borrowed.files, ...inherited.files } };
+}
+
+/**
+ * Every board directory upstream ships became a target of the same name.
+ *
+ * A board whose stub the filter misses disappears from the catalogue silently,
+ * and 627 looks exactly like 628. Not hypothetical: two of them arrive with a
+ * truncated name unless the tar reader honours pax headers.
+ *
+ * By name rather than by count, because the counts also match when two boards
+ * declare one `board_id` between them and one layer file overwrites the other.
+ *
+ * @param {Map<string, Buffer>} sdist
+ * @param {{id: string}[]} boards
+ */
+export function assertEveryBoard(sdist, boards) {
+	const shipped = new Set(
+		[...sdist.keys()].filter((path) => path.startsWith(BOARD_DEFINITIONS)).map((path) => path.split('/')[1])
+	);
+	const parsed = new Set(boards.map((board) => board.id));
+	const lost = [...shipped].filter((id) => !parsed.has(id));
+	const invented = [...parsed].filter((id) => !shipped.has(id));
+	if (lost.length || invented.length) {
+		throw new Error(
+			`${shipped.size} board definitions produced ${parsed.size} target(s).` +
+				`${lost.length ? ` No target for: ${lost.slice(0, 5).join(', ')}.` : ''}` +
+				`${invented.length ? ` No definition for: ${invented.slice(0, 5).join(', ')}.` : ''}`
+		);
+	}
+}
+
+/**
+ * The six standard-library modules CircuitPython really does implement, and why
+ * this reads the sdist rather than the wheel: `setup.py` subtracts them from the
+ * wheel so they cannot shadow CPython's own on a desktop, while the sdist keeps
+ * them because it is the source tree.
+ *
+ * True since 7.3.3, but a side effect of what an sdist is rather than a promise.
+ * If a release prunes them every board silently loses `time` and `os`, so this
+ * fails the build instead.
+ */
+function assertGeneratedStdlib(natives) {
+	const have = modulesOf(natives);
+	const missing = ['math', 'os', 'random', 'ssl', 'struct', 'time'].filter((module) => !have.has(module));
+	if (missing.length) {
+		throw new Error(
+			`the CircuitPython sdist no longer carries ${missing.join(', ')}. ` +
+				'Check whether MANIFEST.in or STD_PACKAGES in setup.py changed upstream.'
+		);
+	}
 }
 
 /** A wheel's licence, from the `.dist-info/` its version stamps. */

@@ -71,6 +71,32 @@ describe('extractTarGz', () => {
 		expect([...files.keys()]).toEqual(['pkg/sys.pyi']);
 	});
 
+	it('takes a long path from the pax header that precedes an entry', () => {
+		// The other way a path over 100 characters travels, and the one Python's
+		// `tarfile` writes: the entry's own name field is truncated, so reading it
+		// turns `__init__.pyi` into `__init__.py`. Two of CircuitPython's 628 board
+		// definitions arrive this way.
+		const long = `pkg/${'d'.repeat(96)}/__init__.pyi`;
+		const files = extractTarGz(tarGz([
+			{ name: 'pax', type: 'x', body: `${long.length + 12} path=${long}\n22 mtime=1778623324.0\n` },
+			{ name: long.slice(0, 100), body: 'GP0: Pin\n' },
+			{ name: 'pkg/sys.pyi', body: 'x' },
+		]));
+		expect([...files.keys()]).toEqual([long, 'pkg/sys.pyi']);
+		expect(text(files, long)).toBe('GP0: Pin\n');
+	});
+
+	it('takes a long path from a GNU long-name entry too', () => {
+		// `tar czf` still defaults to GNU rather than pax, so a future source could
+		// arrive this way and truncate in exactly the same silent fashion.
+		const long = `pkg/${'d'.repeat(96)}/__init__.pyi`;
+		const files = extractTarGz(tarGz([
+			{ name: '././@LongLink', type: 'L', body: `${long}\0` },
+			{ name: long.slice(0, 100), body: 'GP0: Pin\n' },
+		]));
+		expect([...files.keys()]).toEqual([long]);
+	});
+
 	it('joins the ustar prefix onto the name', () => {
 		// How a path over 100 characters is carried, and the reason a plain read of
 		// the name field silently loses files from a deep tree.
@@ -138,6 +164,20 @@ describe('extractArchive', () => {
 	it('reads the format a source declares', () => {
 		expect([...extractArchive(tarGz([{ name: 'a.pyi', body: 'x' }]), 'tar.gz').keys()]).toEqual(['a.pyi']);
 		expect([...extractArchive(Buffer.from(zipSync({ 'a.pyi': strToU8('x') })), 'zip').keys()]).toEqual(['a.pyi']);
+	});
+
+	it('takes a source that is one file as a one-entry tree', () => {
+		// A licence pinned on its own, because the package it belongs to ships no
+		// copy of it. Everything downstream reads a tree, so this stays a tree.
+		const licence = extractArchive(Buffer.from('The MIT License (MIT)\n'), 'raw', 'LICENSE');
+		expect([...licence.keys()]).toEqual(['LICENSE']);
+		expect(text(licence, 'LICENSE')).toBe('The MIT License (MIT)\n');
+	});
+
+	it('refuses a raw source with nowhere to file it', () => {
+		// The name comes from the URL's last segment, so an empty one means the pin
+		// points at a directory. Left unchecked it becomes a file with no name.
+		expect(() => extractArchive(Buffer.from('x'), 'raw')).toThrow(/name/);
 	});
 
 	it('refuses a format it does not know rather than guessing', () => {

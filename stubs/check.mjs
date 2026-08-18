@@ -16,14 +16,24 @@
  * directory holds one folder per published package and is the authoritative
  * list. Versions still come from PyPI, which is where the pins point.
  *
- * Run it by hand: `npm run check:micropythonpackages`.
+ * Run it by hand: `npm run stubs:check`.
  */
 
-import { pathToFileURL } from 'node:url';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { digest, extractZip } from './archive.mjs';
-import { MICROPYTHON_BASE, wheelRoots } from './assemble.mjs';
+// Every version here comes from PyPI, so PEP 440 is the format rather than
+// semver: `1.28.0.post5` is not a semver version at all, and coercing it to one
+// drops the `.post5` that the whole post-release check turns on.
+import { compare, explain, valid } from '@renovatebot/pep440';
+
+import { digest, extractTarGz, extractZip } from './archive.mjs';
+import { CIRCUITPYTHON, CIRCUITPYTHON_LICENCE, MICROBIT, MICROPYTHON_BASE, wheelRoots } from './assemble.mjs';
 import { readConfig } from './fetch.mjs';
+import { compareMembers, rstMembers, stubMembers } from './members.mjs';
+
+const here = path.dirname(fileURLToPath(import.meta.url));
 
 /** Every package Josverl publishes, one folder each. Well under a page. */
 const PUBLISH = 'https://api.github.com/repos/Josverl/micropython-stubs/contents/publish';
@@ -46,13 +56,13 @@ export function packageOf(folder, prefix) {
 
 /** MicroPython releases past the pinned one, oldest first. */
 export function newerReleases(folders, version) {
-	const pinned = order(series(version));
+	const pinned = series(version);
 	const found = new Set();
 	for (const folder of folders) {
 		const release = /^micropython-v(\d+)_(\d+)_(\d+)-/.exec(folder);
 		if (release) found.add(`${release[1]}.${release[2]}.${release[3]}`);
 	}
-	return [...found].filter((release) => order(release) > pinned).sort((a, b) => order(a) - order(b));
+	return [...found].filter((release) => compare(release, pinned) > 0).sort(compare);
 }
 
 /** What upstream has that we do not, and what we carry that upstream dropped. */
@@ -66,23 +76,29 @@ export function comparePackages(upstream, known) {
 /**
  * The newest post-release of the version we pin, if there is one.
  *
- * Numeric on the post number, because `post10` sorts before `post4` as text and
- * this comparison is the whole point of the check. Deliberately confined to the
- * pinned release: moving to the next one is a catalogue-wide decision that
- * `newerReleases` reports separately.
+ * Confined to the pinned release on purpose: moving to the next one is a
+ * catalogue-wide decision that `newerReleases` reports separately.
  */
 export function latestInSeries(versions, pinned) {
 	const wanted = series(pinned);
-	const newest = versions
-		.filter((version) => series(version) === wanted)
-		.sort((a, b) => post(a) - post(b))
-		.pop();
-	return newest !== undefined && post(newest) > post(pinned) ? newest : undefined;
+	const newest = versions.filter((version) => valid(version) && series(version) === wanted).sort(compare).pop();
+	return newest !== undefined && compare(newest, pinned) > 0 ? newest : undefined;
 }
 
-const series = (version) => version.split('.post')[0];
-const post = (version) => Number(/\.post(\d+)$/.exec(version)?.[1] ?? 0);
-const order = (release) => release.split('.').reduce((total, part) => total * 1000 + Number(part), 0);
+/** A version without its post-release suffix: `1.28.0.post5` is the `1.28.0` series. */
+const series = (version) => explain(version).base_version;
+
+/**
+ * The newest of `versions` past `pinned`, or nothing when the pin is current.
+ * A whole release, unlike `latestInSeries`, which stays inside the pinned one.
+ *
+ * Both repositories tag things that are not releases, and a pre-release is not
+ * an update, so neither is offered as one.
+ */
+export function newerRelease(versions, pinned) {
+	const newest = versions.filter((version) => valid(version) && !explain(version).is_prerelease).sort(compare).pop();
+	return newest !== undefined && compare(newest, pinned) > 0 ? newest : undefined;
+}
 
 /**
  * PyPI's own name for one of our ids.
@@ -148,17 +164,28 @@ const line = (name, note, status = 'ok') => ({ name, note, status });
 /** The states that mean this run proved nothing, and so set the exit code. */
 const unresolved = (entry) => entry.status === 'drift' || entry.status === 'unknown';
 
-/** Is a newer post-release of this pin published? */
-async function checkPin([id, source]) {
-	const name = pypiName(id);
+/**
+ * One "is anything newer published?" line. The three upstreams differ only in
+ * where the version list comes from and in what counts as newer, so that is the
+ * argument; an update is always `news`, a failed lookup always `unknown`.
+ *
+ * @param {string} name what the line is about
+ * @param {string} pinned the version config.json holds
+ * @param {() => Promise<string | undefined>} findNewer newer version, if there is one
+ */
+async function checkRelease(name, pinned, findNewer) {
 	try {
-		const newer = latestInSeries(Object.keys((await pypi(name)).releases), source.version);
-		const note = newer ? `${source.version}  UPDATE AVAILABLE (${newer})` : `${source.version}  up to date`;
-		return line(name, note, newer ? 'news' : 'ok');
+		const newer = await findNewer();
+		return line(name, `${pinned}  ${newer ? `UPDATE AVAILABLE (${newer})` : 'up to date'}`, newer ? 'news' : 'ok');
 	} catch (error) {
 		return line(name, `lookup failed: ${error}`, 'unknown');
 	}
 }
+
+/** Is a newer post-release of this pin published? */
+const checkPin = ([id, source]) =>
+	checkRelease(pypiName(id), source.version, async () =>
+		latestInSeries(Object.keys((await pypi(pypiName(id))).releases), source.version));
 
 /**
  * A package we have decided not to ship, whose entry is just the reason why.
@@ -206,7 +233,8 @@ async function checkSkip([skipped, entry], sources) {
 	}
 }
 
-function report(title, lines, width) {
+/** One table. The width is shared across the tables of a section, so they line up. */
+function report(title, lines, width = Math.max(...lines.map((entry) => entry.name.length))) {
 	console.log(`${title}:`);
 	for (const { name, note } of lines) console.log(`  ${name.padEnd(width)}  ${note}`);
 }
@@ -275,13 +303,190 @@ export async function checkMicroPythonPackages() {
 	return { failed: failed.length };
 }
 
+/**
+ * A pin that can move under us, re-downloaded and re-hashed.
+ *
+ * PyPI files are immutable; a git tag is a label and moving one is normal. Both
+ * GitHub-sourced pins hang off a tag, and `fetch.mjs` only re-hashes what is
+ * already cached, so a moved tag stays invisible until someone deletes
+ * `.cache/` and gets a different build.
+ */
+async function checkMovablePin([id, source]) {
+	try {
+		const response = await fetch(source.url);
+		if (!response.ok) return line(id, `${source.url}: ${response.status} ${response.statusText}`, 'unknown');
+		const actual = digest(Buffer.from(await response.arrayBuffer()));
+		return actual === source.sha256
+			? line(id, `${source.version} still serves the bytes we pinned`)
+			: line(id, `${source.version} now serves ${actual.slice(0, 12)}, not ${source.sha256.slice(0, 12)}: the tag moved`, 'drift');
+	} catch (error) {
+		return line(id, `could not re-fetch: ${error}`, 'unknown');
+	}
+}
+
+/**
+ * A source this file checks by name, which has to be there.
+ *
+ * A missing key means the config was renamed or the entry dropped, and returning
+ * quietly would take a whole section of the report with it while the run still
+ * passed. Unverified is the one thing this command may not report as verified.
+ */
+function required(sources, id) {
+	const source = sources[id];
+	if (!source) throw new Error(`config.json has no "${id}" source, so nothing about it can be checked`);
+	return source;
+}
+
+/** micro:bit: one tarball off a tag, so both things that can change are asked about. */
+async function checkMicrobit(sources) {
+	const source = required(sources, MICROBIT);
+	console.log('Checking microbit-foundation/micropython-microbit-stubs...\n');
+
+	const tags = 'https://api.github.com/repos/microbit-foundation/micropython-microbit-stubs/tags';
+	const lines = [
+		await checkRelease(MICROBIT, source.version, async () =>
+			newerRelease((await json(tags)).map((tag) => tag.name), source.version)),
+		await checkMovablePin([MICROBIT, source]),
+	];
+	report('micro:bit', lines);
+	console.log('');
+	return lines;
+}
+
+/**
+ * CircuitPython: the release, the two pins, and the claim the borrowed half
+ * rests on.
+ *
+ * That last one is why this section exists. `CIRCUITPYTHON_FROM_UNIX` is only
+ * correct while `docs/library/` keeps meaning the modules CircuitPython inherits
+ * rather than implements, and upstream moving one in or out makes our base wrong
+ * where no build assertion can see it: every file still exists, every board
+ * still resolves.
+ */
+async function checkCircuitPython(sources) {
+	const source = required(sources, CIRCUITPYTHON);
+	console.log('Checking adafruit/circuitpython...\n');
+
+	const name = pypiName(CIRCUITPYTHON);
+	const lines = [
+		await checkRelease(name, source.version, async () =>
+			newerRelease(Object.keys((await pypi(name)).releases), source.version)),
+		await checkMovablePin([CIRCUITPYTHON_LICENCE, required(sources, CIRCUITPYTHON_LICENCE)]),
+	];
+	let docs;
+	try {
+		docs = await circuitpythonDocs(source.version);
+		lines.push(checkInheritedModules(docs));
+	} catch (error) {
+		lines.push(line('docs/library', `could not read the reference docs: ${error}`, 'unknown'));
+	}
+	report('CircuitPython', lines);
+	console.log('');
+	if (docs) reportBorrowedMembers(docs);
+	return lines;
+}
+
+/**
+ * `docs/library/` at the tag the stubs were built from. The whole repository for
+ * fourteen files, because one tarball beats a directory listing plus a request
+ * per file, which is also why this check is run by hand and not by the build.
+ */
+async function circuitpythonDocs(version) {
+	const url = `https://codeload.github.com/adafruit/circuitpython/tar.gz/refs/tags/${version}`;
+	const response = await fetch(url);
+	if (!response.ok) throw new Error(`${url}: ${response.status} ${response.statusText}`);
+	const tree = extractTarGz(Buffer.from(await response.arrayBuffer()));
+
+	const docs = new Map();
+	for (const [path, content] of tree) {
+		const name = /^[^/]+\/docs\/library\/([a-z_]+)\.rst$/.exec(path)?.[1];
+		if (name && name !== 'index') docs.set(name, content.toString('utf8'));
+	}
+	if (docs.size === 0) throw new Error('no docs/library/*.rst in the tag, so the layout moved');
+	return docs;
+}
+
+/**
+ * The set our borrow list is derived from, asserted rather than assumed.
+ *
+ * Every module documented here is one CircuitPython inherits and generates no
+ * stub for, so it has to come from MicroPython's. Six are not in the shared base
+ * either and are named in `assemble.mjs`; a name appearing or leaving means that
+ * hand-written six is no longer the right six.
+ */
+function checkInheritedModules(docs) {
+	const documented = [...docs.keys()].sort();
+	const known = INHERITED_MODULES.join(', ');
+	if (documented.join(', ') === known) return line('docs/library', `${documented.length} inherited modules, as expected`);
+	const added = documented.filter((name) => !INHERITED_MODULES.includes(name));
+	const gone = INHERITED_MODULES.filter((name) => !documented.includes(name));
+	return line('docs/library', `now documents ${documented.length} inherited module(s)` +
+		`${added.length ? `, new: ${added.join(', ')}` : ''}${gone.length ? `, gone: ${gone.join(', ')}` : ''}. ` +
+		'Check CIRCUITPYTHON_FROM_UNIX in assemble.mjs against it.', 'drift');
+}
+
+/**
+ * The modules CircuitPython documents in `docs/library/` rather than generating
+ * stubs for. Thirteen at 10.2.1, and the reason the base borrows at all.
+ */
+const INHERITED_MODULES = [
+	'array', 'binascii', 'builtins', 'collections', 'errno', 'gc', 'heapq', 'io', 'json', 'platform', 're', 'select', 'sys',
+];
+
+/**
+ * What a user would notice about the borrowed half, in the direction worth
+ * acting on. Read against the base this build produced, since what a user sees
+ * is what shipped, and reported rather than asserted: both parsers are
+ * approximations and the numbers move when either project edits prose.
+ */
+function reportBorrowedMembers(docs) {
+	let base;
+	try {
+		base = JSON.parse(readFileSync(path.join(here, '..', 'assets', 'stubs', 'circuitpython', 'stdlib.json'), 'utf8'));
+	} catch {
+		console.log('Borrowed modules: assets/stubs/ is not built, so there is nothing to compare. Run `npm run stubs`.\n');
+		return;
+	}
+
+	const rows = [];
+	let extras = 0;
+	for (const [module, text] of [...docs].sort()) {
+		const stub = base.files[`stdlib/${module}.pyi`] ?? base.files[`stdlib/${module}/__init__.pyi`];
+		if (!stub) {
+			rows.push([module, 'no stub ships for it at all']);
+			continue;
+		}
+		const { missing, extra } = compareMembers(rstMembers(text, module), stubMembers(stub));
+		extras += extra;
+		if (missing.length) rows.push([module, `documented, and not in the stub: ${missing.join(' ')}`]);
+	}
+
+	console.log('Borrowed from MicroPython, against CircuitPython\'s own reference docs:');
+	const width = Math.max(...rows.map(([module]) => module.length), 12);
+	for (const [module, note] of rows) console.log(`  ${module.padEnd(width)}  ${note}`);
+	console.log(`  ${'-'.padEnd(width)}  ${rows.length} module(s) where valid code may be flagged.`);
+	console.log(`  ${''.padEnd(width)}  ${extras} name(s) the stubs carry that the docs do not mention, which is what`);
+	console.log(`  ${''.padEnd(width)}  borrowing CPython-shaped stubs costs and is not per-name actionable.`);
+	console.log('  Both sides are parsed approximately, so treat this as a reading list, not a gate.\n');
+}
+
+/** Everything this project assumes about an upstream, in one run. */
+export async function checkStubs() {
+	const { sources } = await readConfig();
+	const { failed } = await checkMicroPythonPackages();
+	const rest = [...(await checkMicrobit(sources)), ...(await checkCircuitPython(sources))];
+	const unclean = rest.filter(unresolved);
+	for (const { name, note } of unclean) console.log(`  ${name}  ${note}`);
+	return { failed: failed + unclean.length };
+}
+
 // `pathToFileURL`, not a template string: only it produces the percent-encoding
 // and the `file:///C:/` shape `import.meta.url` carries on Windows.
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMain) {
 	// Never non-zero for an available update, so this is safe to wire into a
 	// scheduled job: only a false claim or a check that could not run fails it.
-	checkMicroPythonPackages()
+	checkStubs()
 		.then(({ failed }) => {
 			if (failed) process.exitCode = 1;
 		})

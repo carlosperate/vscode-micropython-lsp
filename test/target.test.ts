@@ -60,6 +60,43 @@ describe('composeSeed', () => {
 		expect(composeSeed([])).toEqual({});
 	});
 
+	it('keeps only the modules a layer includes, from what is under it', () => {
+		// The product's claim, on the flavour that needs it: 628 boards share one
+		// base and each keeps the modules its firmware was built with.
+		const seed = composeSeed([
+			layer({ 'stdlib/wifi/__init__.pyi': '', 'stdlib/digitalio/__init__.pyi': '', 'stdlib/sys.pyi': '' }),
+			{ files: { 'stdlib/board/__init__.pyi': 'GP0: Pin\n' }, include: ['digitalio', 'sys'] },
+		]);
+		expect(seeded(seed)).toEqual(['stdlib/board/__init__.pyi', 'stdlib/digitalio/__init__.pyi', 'stdlib/sys.pyi']);
+	});
+
+	it('keeps what the allowlist has no opinion about', () => {
+		// `VERSIONS` belongs to no module and gates every one of them, so a filter
+		// that dropped it would take the standard library with it.
+		const seed = composeSeed([
+			layer({ 'stdlib/VERSIONS': 'sys: 3.0-\n', 'stdlib/wifi/__init__.pyi': '', 'stubs/x/y.pyi': '' }),
+			{ files: {}, include: ['sys'] },
+		]);
+		expect(seeded(seed)).toEqual(['stdlib/VERSIONS', 'stubs/x/y.pyi']);
+	});
+
+	it('never filters the layer that carries the list', () => {
+		// A board's own pin definitions are what it is for, and no board documents
+		// itself in its own module list.
+		const seed = composeSeed([{ files: { 'stdlib/board/__init__.pyi': 'GP0: Pin\n' }, include: ['sys'] }]);
+		expect(seeded(seed)).toEqual(['stdlib/board/__init__.pyi']);
+	});
+
+	it('filters what is under it before its own files land', () => {
+		// The one sanctioned collision: a board's `board` module replaces the base's
+		// pin-less placeholder. Filtering after the merge would delete it instead.
+		const seed = composeSeed([
+			layer({ 'stdlib/board/__init__.pyi': 'placeholder' }),
+			{ files: { 'stdlib/board/__init__.pyi': 'GP0: Pin\n' }, include: ['sys'] },
+		]);
+		expect(seed[`${TARGET_TYPESHED}/stdlib/board/__init__.pyi`]).toBe('GP0: Pin\n');
+	});
+
 	it('refuses a path that escapes the typeshed root', () => {
 		// `..` would reach `/typeshed` itself, which is the one root a target
 		// exists to replace.
@@ -113,9 +150,21 @@ describe('parseLayer', () => {
 		expect(parseLayer('{"files":{"stdlib/sys.pyi":""}}')).toEqual({ files: { 'stdlib/sys.pyi': '' } });
 	});
 
+	it('reads an allowlist when the layer carries one', () => {
+		expect(parseLayer('{"files":{},"include":["sys"]}').include).toEqual(['sys']);
+	});
+
 	it('refuses a layer it cannot use', () => {
 		expect(() => parseLayer('not json')).toThrow();
 		expect(() => parseLayer('{}')).toThrow(/files/);
+		// An allowlist of nothing keeps nothing, and a typeshed root with no
+		// `builtins.pyi` resolves nothing at all while looking like a loaded target.
+		expect(() => parseLayer('{"files":{},"include":[]}')).toThrow(/include/);
+		expect(() => parseLayer('{"files":{},"include":"sys"}')).toThrow(/include/);
+		// A list of things that are not module names keeps no module either, so it
+		// reaches the same empty root by a different route.
+		expect(() => parseLayer('{"files":{},"include":[1]}')).toThrow(/include/);
+		expect(() => parseLayer('{"files":{},"include":[""]}')).toThrow(/include/);
 	});
 });
 

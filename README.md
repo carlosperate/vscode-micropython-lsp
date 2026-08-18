@@ -5,8 +5,8 @@ Embedded Python projects using MicroPython or CircuitPython 🐍🤖.
 
 Works on both desktop and web versions of VS Code, and compatible editors.
 
-🚧 This extension is still under development. The BBC micro:bit and MicroPython
-boards are implemented, CircuitPython will be added soon.
+🚧 This extension is still under development. The BBC micro:bit, MicroPython and
+CircuitPython boards are implemented.
 
 ## Why this extension vs a generic Python LSP
 
@@ -16,10 +16,9 @@ signatures it offers are relevant to your embedded Python project.
 
 Existing Python extensions expect to be running on the desktop or a server with
 filesystem access, to scan installed packages for type information.
-This extension is designed to run on both desktop and the browser version
+This extension is designed to run on both desktop and the browser based
 VSCode web (https://vscode.dev, https://github.dev), and it ships with full
-stubs for the most common MicroPython and CircuitPython boards, so what it
-offers matches the board you are using.
+stubs for the most common MicroPython and CircuitPython boards.
 
 Stubs come from the [MicroPython-Stubs](https://github.com/Josverl/micropython-stubs)
 and [CircuitPython](https://github.com/adafruit/circuitpython) projects.
@@ -45,28 +44,7 @@ dropdown in Settings, or add it to your workspace settings
 | `micropython/rp2/…` | RP2040 and RP2350 boards like Raspberry Pi Pico, Pico W, Pico 2, Pico 2 W, Arduino Nano RP2040 Connect, Waveshare RP2040-Zero |
 | `micropython/samd/...` | Microchip SAMD boards like the Seeed Wio Terminal |
 | `micropython/stm32/pybv11` | PyBoard v1.1 |
-
-**Board not listed?** Pick the generic target for its chip, shown in the dropdown as
-`… (generic)`: `micropython/rp2` for any RP2040 or RP2350, `micropython/samd` for SAMD21 and
-SAMD51, `micropython/stm32` for STM32. These are the port-wide stubs MicroPython publishes, so
-they cover everything the port has in common and only miss the pin definitions specific to your
-board. For ESP32 and ESP8266 the port-wide stubs are what `micropython/esp32/esp32_generic` and
-`micropython/esp8266/esp8266_generic` already give you.
-
-**One board at a time, never a merge.** The same module means different things on
-different boards, `machine` most of all, so a combined set would offer you
-hardware you do not have. Changing the target restarts the language server with
-that board's modules and nothing else.
-
-MicroPython boards are stubbed at **1.28**; the micro:bit at **v0.4.0** of the
-Foundation's stubs. Older firmware gets slightly optimistic completions.
-
-If you flashed **upstream MicroPython** onto a micro:bit rather than the
-Foundation's build, pick `auto`, not `microbit`: your board has `machine` and
-the standard library, and none of the `microbit`, `display` or `radio` modules
-the `microbit` target offers.
-
-🚧 CircuitPython boards are next.
+| `circuitpython/…` | 628 CircuitPython boards, one entry each, as: `circuitpython/raspberry_pi_pico_w`, `circuitpython/adafruit_feather_esp32s2`, etc |
 
 ## What gets analysed
 
@@ -76,21 +54,23 @@ needed, including files you have not opened.
 
 **Stubs cover what isn't a file in your project.** The stubs for
 MicroPython/CircuitPython built-in modules, like `machine`, `board`, etc are
-included in the extension. Libraries present as compiled `.mpy` bytecode files
+included in the extension.
+
+Libraries present in your project as compiled `.mpy` bytecode files
 cannot be read, so they would need additional stubs to be provided alongside
-your project to get autocomplete.
+them to get autocomplete.
 
 ## Using it alongside other Python extensions
 
-VS Code runs every Python language server installed and shows all of their
-results combined.
+VS Code runs all the Python language servers installed simultaneously and shows
+their results combined.
 
 As the generic Python extensions (like Microsoft's Pylance, Pyright, etc),
 might contain invalid stubs for MicroPython/CircuitPython, it is recommended to
 disable them for your project.
 
 VS Code does not have a setting to pick a single language server, so each of the
-others has to be switched off with its own settings.
+others has to be switched off individually.
 To disable the most common Python extensions, add this to your project's
 `.vscode/settings.json` file:
 
@@ -112,7 +92,7 @@ To disable the most common Python extensions, add this to your project's
 }
 ```
 
-On the other hand, you can disable this specialised MicroPython/CircuitPython
+You can also enable/disable this specialised MicroPython/CircuitPython
 Python extension with this setting in your global or workspace settings:
 
 ```json

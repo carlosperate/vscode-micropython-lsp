@@ -37,8 +37,14 @@ export function cachedArchive(id, source) {
 
 /** The files a source contributes, from the archive as downloaded. */
 export function sourceTree(archive, source) {
-	return selectTree(extractArchive(archive, source.format), source);
+	return selectTree(extractArchive(archive, source.format, upstreamName(source.url)), source);
 }
+
+/**
+ * What a `raw` source's one file is called upstream, and so here too. Ignored by
+ * every other format, whose names come from inside the archive.
+ */
+const upstreamName = (url) => url.split('?')[0].split('/').filter(Boolean).pop();
 
 export async function readConfig() {
 	return JSON.parse(await readFile(CONFIG, 'utf8'));
