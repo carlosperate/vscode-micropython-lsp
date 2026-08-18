@@ -4,7 +4,9 @@ import * as vscode from 'vscode';
 // client stack, and nothing new has to be declared to import it.
 import { BrowserMessageReader, BrowserMessageWriter, createMessageConnection } from 'vscode-languageclient/browser';
 
+import { PRODUCT, TARGET_SECTION } from '../../client/src/config';
 import { SILENT_LOGGER } from '../../client/src/log-level';
+import { SELECT_TARGET_COMMAND } from '../../client/src/target-ui';
 import { createUriMap, SERVER_ROOT } from '../../client/src/uri-map';
 import { type EngineUrls, startPyrightWorker } from '../../client/src/worker';
 import { BYPASS_PROBE, replacementTypeshed } from './typeshed-fixture';
@@ -225,6 +227,7 @@ export async function run(): Promise<void> {
 	// the write is Global and would otherwise outlive the run and start the next
 	// one on the wrong board.
 	try {
+		await checkBoardPicker(ext, api);
 		await checkTargetSwitch(api, root);
 		await checkDeviceStubs(root);
 		await checkMicroPythonBoards(root);
@@ -505,6 +508,35 @@ async function checkCrashRecovery(api: any, root: vscode.Uri): Promise<void> {
 }
 
 /**
+ * The command id is a string in three places (here, the manifest, the markdown
+ * link in the setting) and every mismatch is silent. Runs before the target
+ * checks, so it sees the default state.
+ */
+async function checkBoardPicker(ext: vscode.Extension<any>, api: any): Promise<void> {
+	const registered = await vscode.commands.getCommands(true);
+	record('the board picker command is registered', registered.includes(SELECT_TARGET_COMMAND),
+		`${SELECT_TARGET_COMMAND} ${registered.includes(SELECT_TARGET_COMMAND) ? 'is' : 'is NOT'} a known command`);
+
+	// The manifest against the ids and the name the code uses, which is the half a
+	// literal typed twice gets wrong: no palette entry, a dead link in Settings, or
+	// a palette category that no longer matches the product. Every step is optional
+	// chained, because a dropped contribution is the regression this check is for
+	// and a throw here would take `summarise()` and every earlier result with it.
+	const contributes = ext.packageJSON?.contributes;
+	const command = (contributes?.commands ?? []).find((c: { command: string }) => c.command === SELECT_TARGET_COMMAND);
+	const link: string = contributes?.configuration?.properties?.[TARGET_SECTION]?.markdownDescription ?? '';
+	record('the manifest offers that same command, named and linked as the code expects',
+		Boolean(command) && command?.category === PRODUCT && link.includes(`command:${SELECT_TARGET_COMMAND}`),
+		`palette entry: ${Boolean(command)}, category: ${command?.category ?? 'none'}, ` +
+		`link in the setting description: ${link.includes(SELECT_TARGET_COMMAND)}`);
+
+	// Waited on: the first refresh reads the 648-entry catalogue.
+	const idle = await waitFor(async () => api.targetStatus, (status) => Boolean(status?.text), 30_000);
+	record('the status bar asks for a board when none is chosen', idle?.text === 'Select Python board',
+		`status bar reads "${idle?.text}" (visible=${idle?.visible})`);
+}
+
+/**
  * Changing the target rebuilds the session on a **new worker**.
  *
  * The engine reads its seed once, at `initialize`, into a filesystem it merges
@@ -533,6 +565,12 @@ async function checkTargetSwitch(api: any, root: vscode.Uri): Promise<void> {
 	);
 	record('the server for the new target answers', serverAnswered(answering),
 		`hover on sys.platform after the switch: ${oneLine(answering)}`);
+
+	// Following the setting is the whole job. A Python file is open by now, which
+	// is the other half of the rule: the item is hidden otherwise.
+	const followed = await waitFor(async () => api.targetStatus, (status) => status?.text === 'BBC micro:bit', 30_000);
+	record('the status bar follows the chosen board', followed?.text === 'BBC micro:bit' && followed?.visible === true,
+		`after switching to microbit the status bar reads "${followed?.text}" (visible=${followed?.visible})`);
 }
 
 /**

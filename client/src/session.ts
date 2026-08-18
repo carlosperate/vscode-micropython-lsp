@@ -2,14 +2,15 @@ import { commands, Disposable, OutputChannel, Uri, window, workspace, WorkspaceF
 import { CloseAction, ErrorAction, ErrorHandler, LanguageClientOptions, Trace } from 'vscode-languageclient';
 import { LanguageClient } from 'vscode-languageclient/browser';
 
+import { PRODUCT, readLogLevel, readTarget } from './config';
 import { createClientSink, createMirror, type Mirror } from './fs-bridge';
 import { Heartbeat, startHeartbeat } from './heartbeat';
 import { logger } from './log';
-import { type LogLevel, resolveLogLevel, traceValueFor } from './log-level';
+import { traceValueFor } from './log-level';
 import { ping } from './ping';
 import { DEFAULT_RESTART_POLICY, decideRestart, RestartPolicy } from './restart-policy';
 import { serverSettings, SERVER_TYPESHED } from './settings';
-import { AUTO_TARGET, loadTarget, type ReadStub, type Seed, TARGET_TYPESHED_URI } from './target';
+import { loadTarget, type ReadStub, type Seed, TARGET_TYPESHED_URI } from './target';
 import { createUriMap, SERVER_ROOT, type UriMap } from './uri-map';
 import { type EngineUrls, PyrightWorker, startPyrightWorker } from './worker';
 
@@ -127,7 +128,7 @@ export class AnalysisSession {
 		this.root = this.workspaceRoot();
 		const uris = createUriMap(this.root);
 		const options = this.clientOptions(uris, seed);
-		const client = new LanguageClient(CLIENT_ID, 'MicroPython LSP', options, this.workers.worker);
+		const client = new LanguageClient(CLIENT_ID, PRODUCT, options, this.workers.worker);
 		this.client = client;
 
 		// Before `start()`, which is where the client subscribes to the document
@@ -355,26 +356,10 @@ export class AnalysisSession {
 async function reportGiveUp(): Promise<void> {
 	const reload = 'Reload Window';
 	const choice = await window.showErrorMessage(
-		'MicroPython IntelliSense stopped and could not be restarted. Reload the window to try again.',
+		`${PRODUCT} stopped and could not be restarted. Reload the window to try again.`,
 		reload
 	);
 	if (choice === reload) await commands.executeCommand('workbench.action.reloadWindow');
-}
-
-/**
- * The configured target id, read in one place so the session and the listener
- * that decides whether to rebuild it cannot disagree about what is selected.
- *
- * An unset or empty value is the default, not a missing target: `get` answers
- * `''` for a setting a user has cleared rather than removed.
- */
-export function readTarget(): string {
-	return workspace.getConfiguration('micropython-lsp').get<string>('target') || AUTO_TARGET;
-}
-
-/** Normalised, so the engine is sent the same level our own messages are filtered by. */
-function readLogLevel(): LogLevel {
-	return resolveLogLevel(workspace.getConfiguration('micropython-lsp').get<string>('logLevel'));
 }
 
 /**

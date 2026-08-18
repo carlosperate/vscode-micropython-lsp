@@ -90,6 +90,18 @@ export function findTarget(catalogue: Catalogue, id: string): Target | undefined
 }
 
 /**
+ * The catalogue on its own, for anything that needs the list of boards rather
+ * than one board's stubs.
+ *
+ * `loadTarget` reads it too, and deliberately re-reads rather than sharing: it is
+ * the only thing standing between a broken asset and a session that claims a
+ * board it never loaded, so it stays a read of the file the seed came from.
+ */
+export async function loadCatalogue(read: ReadStub): Promise<Catalogue> {
+	return readAsset(read, CATALOGUE, parseCatalogue);
+}
+
+/**
  * Read one target's layers and merge them into the files to seed.
  *
  * Pure over the reader, so the whole catalogue path is unit-testable: the caller

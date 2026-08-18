@@ -1,12 +1,12 @@
 import { Disposable, ExtensionContext, OutputChannel, window, workspace } from 'vscode';
 
-import { DEFAULT_LOG_LEVEL, type Logger, type LogLevel, resolveLogLevel, shouldLog } from './log-level';
+import { mirrorsLogsToConsole, PRODUCT, readLogLevel, SECTION } from './config';
+import { DEFAULT_LOG_LEVEL, type Logger, type LogLevel, shouldLog } from './log-level';
 
 /**
- * One channel for all three streams: this extension's own logs, the engine's,
- * and the LSP protocol trace. `micropython-lsp.logLevel` sizes it, and
- * `micropython-lsp.mirrorLogsToConsole` decides whether it is also printed to
- * the developer console, which is the only place a headless run can read it.
+ * One channel for all three streams: this extension's own logs, the engine's, and
+ * the LSP protocol trace. `logLevel` sizes it, and `mirrorLogsToConsole` also
+ * prints it to the developer console, the only place a headless run can read it.
  */
 
 /** The language client's own labels, so one channel reads as one log. */
@@ -40,9 +40,9 @@ export function initLogging(context: ExtensionContext): OutputChannel {
 
 function ensureChannel(): OutputChannel {
 	if (!channel) {
-		channel = window.createOutputChannel('MicroPython LSP');
+		channel = window.createOutputChannel(PRODUCT);
 		listener = workspace.onDidChangeConfiguration((e) => {
-			if (e.affectsConfiguration('micropython-lsp')) refresh();
+			if (e.affectsConfiguration(SECTION)) refresh();
 		});
 	}
 	refresh();
@@ -50,9 +50,8 @@ function ensureChannel(): OutputChannel {
 }
 
 function refresh(): void {
-	const config = workspace.getConfiguration('micropython-lsp');
-	level = resolveLogLevel(config.get<string>('logLevel'));
-	mirrorToConsole = config.get<boolean>('mirrorLogsToConsole', false);
+	level = readLogLevel();
+	mirrorToConsole = mirrorsLogsToConsole();
 }
 
 export const logger: Logger = {

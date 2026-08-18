@@ -1,12 +1,11 @@
 import { ExtensionContext, ProgressLocation, Uri, window, workspace } from 'vscode';
 
+import { ENABLE_SECTION, isEnabled, PRODUCT, readTarget, TARGET_SECTION } from './config';
 import { clientChannel, initLogging, logger } from './log';
-import { AnalysisSession, readTarget } from './session';
+import { AnalysisSession } from './session';
 import { type ReadStub } from './target';
+import { createTargetUi } from './target-ui';
 import { type EngineUrls } from './worker';
-
-const ENABLE_SECTION = 'micropython-lsp.enable';
-const TARGET_SECTION = 'micropython-lsp.target';
 
 /** Where the generated stub catalogue and its layers live inside the extension. */
 const STUBS = 'assets/stubs';
@@ -24,6 +23,11 @@ export async function activate(context: ExtensionContext) {
 		engine: Uri.joinPath(context.extensionUri, 'assets/pyright.worker.js').toString(true),
 	};
 	readStub = stubReader(context);
+
+	// Before the first start, which takes seconds: the picker and its status bar
+	// item are what a user reaches for while waiting, and neither needs a session.
+	const targetUi = createTargetUi(readStub);
+	context.subscriptions.push(targetUi);
 
 	// Before the first start, not after: starting fetches the worker and waits for
 	// the LSP handshake, and a setting changed during those seconds would
@@ -53,16 +57,16 @@ export async function activate(context: ExtensionContext) {
 		get pyright() {
 			return session?.pyright;
 		},
+		// What the status bar is telling the user, asserted without a UI harness.
+		get targetStatus() {
+			return targetUi.status;
+		},
 		checkHealth: () => session?.checkHealth() ?? Promise.resolve(false),
 	};
 }
 
 export async function deactivate(): Promise<void> {
 	await enqueue(stopSession);
-}
-
-function isEnabled(): boolean {
-	return workspace.getConfiguration().get<boolean>(ENABLE_SECTION, true);
 }
 
 /**
@@ -132,7 +136,7 @@ async function applyTarget(): Promise<void> {
 	await window.withProgress(
 		// The engine is already in the HTTP cache, so this is parse and analysis
 		// rather than a re-download, but it is not instant either.
-		{ location: ProgressLocation.Window, title: 'MicroPython IntelliSense: loading stubs' },
+		{ location: ProgressLocation.Window, title: `${PRODUCT}: loading stubs` },
 		async () => {
 			await stopSession();
 			await startSession();

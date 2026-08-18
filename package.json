@@ -1,7 +1,7 @@
 {
 	"name": "micropython-lsp",
-	"displayName": "MicroPython & CircuitPython Language Server",
-	"description": "Autocomplete, type checking and inline docs for MicroPython and CircuitPython. Work on VSCode web in the browser.",
+	"displayName": "MicroPython & CircuitPython IntelliSense",
+	"description": "Autocomplete, type checking and inline docs for MicroPython and CircuitPython boards. Works on desktop and in the browser, with no server backend.",
 	"publisher": "carlosperate",
 	"version": "0.2.0",
 	"license": "MIT",
@@ -64,8 +64,15 @@
 	},
 	"homepage": "https://github.com/carlosperate/vscode-micropython-lsp#readme",
 	"contributes": {
+		"commands": [
+			{
+				"command": "micropython-lsp.selectTarget",
+				"title": "Select Board",
+				"category": "MicroPython & CircuitPython IntelliSense"
+			}
+		],
 		"configuration": {
-			"title": "MicroPython & CircuitPython Language Server",
+			"title": "MicroPython & CircuitPython IntelliSense",
 			"properties": {
 				"micropython-lsp.enable": {
 					"type": "boolean",
@@ -79,6 +86,7 @@
 					"default": "auto",
 					"scope": "window",
 					"description": "The board to analyse against. Only that board's firmware modules resolve, which is why a desktop-Python module such as 'subprocess' correctly stops resolving once a board is chosen. The default, 'auto', is the standard library alone: no board modules resolve until you pick one.",
+					"markdownDescription": "The board to analyse against. Only that board's firmware modules resolve, which is why a desktop-Python module such as `subprocess` correctly stops resolving once a board is chosen. The default, `auto`, is the standard library alone: no board modules resolve until you pick one.\n\n[Click here to search the board list](command:micropython-lsp.selectTarget) to filter hundreds of boards as you type. The dropdown below lists the same boards, unfiltered.",
 					"enum": [
 						"auto",
 						"microbit",
@@ -2041,14 +2049,14 @@
 					],
 					"default": "information",
 					"scope": "window",
-					"description": "How much this extension and the language server it bundles write to the 'MicroPython LSP' output channel. 'trace' adds worker startup, LSP message traffic, and the server's most detailed analysis logging.",
+					"description": "How much this extension and the language server it bundles write to the 'MicroPython & CircuitPython IntelliSense' output channel. 'trace' adds worker startup, LSP message traffic, and the server's most detailed analysis logging.",
 					"order": 3
 				},
 				"micropython-lsp.mirrorLogsToConsole": {
 					"type": "boolean",
 					"default": false,
 					"scope": "window",
-					"description": "Developer/debugging setting. Also print the 'MicroPython LSP' output channel to the developer console. Logging level defined by micropython-lsp.logLevel.",
+					"description": "Developer/debugging setting. Also print the 'MicroPython & CircuitPython IntelliSense' output channel to the developer console. Logging level defined by micropython-lsp.logLevel.",
 					"order": 4
 				}
 			}

@@ -1,33 +1,34 @@
-# MicroPython & CircuitPython Language Server
+# MicroPython & CircuitPython IntelliSense
 
 Add autocomplete, inline docs, go to definition, and type checking for
 Embedded Python projects using MicroPython or CircuitPython 🐍🤖.
 
 Works on both desktop and web versions of VS Code, and compatible editors.
 
-🚧 This extension is still under development. The BBC micro:bit, MicroPython and
-CircuitPython boards are implemented.
+🚧 This extension is still under development, but should already be usable.
+Bug reports are very welcome, thank you!
+https://github.com/carlosperate/vscode-micropython-lsp/issues
 
 ## Why this extension vs a generic Python LSP
 
-The goal of this extension is to provide a language server specifically
-configured for MicroPython and CircuitPython, so the completions and
-signatures it offers are relevant to your embedded Python project.
+The goal of this extension is to provide a Python Language Server specifically
+configured for MicroPython and CircuitPython, so the completions and signatures
+it offers are relevant to your embedded Python project.
 
 Existing Python extensions expect to be running on the desktop or a server with
 filesystem access, to scan installed packages for type information.
 This extension is designed to run on both desktop and the browser based
-VSCode web (https://vscode.dev, https://github.dev), and it ships with full
-stubs for the most common MicroPython and CircuitPython boards.
+VS Code for the Web (https://vscode.dev, https://github.dev), and it ships with
+full stubs for the most common MicroPython and CircuitPython boards.
 
 Stubs come from the [MicroPython-Stubs](https://github.com/Josverl/micropython-stubs)
 and [CircuitPython](https://github.com/adafruit/circuitpython) projects.
 
 ## Supported boards
 
-Pick your board from the **MicroPython & CircuitPython Language Server > Target**
-dropdown in Settings, or add it to your workspace settings
-(`.vscode/settings.json`):
+Pick your board with the **MicroPython & CircuitPython IntelliSense: Select Board**
+command, from the board shown in the status bar while a Python file is open,
+or by adding it to your settings (`.vscode/settings.json`):
 
 ```json
 {
